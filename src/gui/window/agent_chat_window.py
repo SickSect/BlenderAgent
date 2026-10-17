@@ -1,11 +1,12 @@
 import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QTextEdit, QLineEdit, QPushButton, QLabel
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QThread, QMetaObject, Q_ARG
 from PyQt6.QtGui import QFont
 
 from gui.agent_starter import AgentConnector
 from gui.style.chat_msg_style import get_client_chat_style, get_agent_chat_style
 from gui.style.style import get_theme
+from gui.worker import AgentWorker
 
 
 # Если запускаешь напрямую как скрипт, возможно придется использовать: from style import get_theme
@@ -15,6 +16,18 @@ class AgentWindowChat(QMainWindow):
         super().__init__()
 
         self.agent = agent
+
+        # --- Настройка потоков ---
+        self.thread = QThread()
+        self.worker = AgentWorker(agent)
+        self.worker.moveToThread(self.thread)
+
+        # Запускаем поток
+        self.thread.start()
+
+        # Подключаем сигналы
+        self.worker.response_ready.connect(self.on_agent_response)
+        self.worker.error_occurred.connect(self.on_agent_error)
 
         # --- Настройка окна ---
         self.setWindowTitle("AI Code Agent")
@@ -67,11 +80,45 @@ class AgentWindowChat(QMainWindow):
         # Сообщение пользователя - справа
         self.append_to_chat(get_client_chat_style(text))
         self.input_field.clear()
+        # Показываем, что агент "печатает"
+        self.append_to_chat("<i>Агент печатает...</i>", is_system=True)
 
-        response = self.agent.send_msg(text)
+        # Отключаем кнопку и поле ввода, пока агент думает
+        self.send_button.setEnabled(False)
+        self.input_field.setEnabled(False)
+
+        # Вызываем метод в фоновом потоке
+        QMetaObject.invokeMethod(
+            self.worker,
+            "process_message",
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(str, text)
+        )
+
+    def  on_agent_response(self, response):
+        self.send_button.setEnabled(True)
+        self.input_field.setEnabled(True)
 
         # Ответ агента - слева
         self.append_to_chat(get_agent_chat_style(response))
+
+        # Ставим фокус обратно в поле ввода
+        self.input_field.setFocus()
+
+    def on_agent_error(self, error_msg):
+        # Включаем обратно кнопку и поле
+        self.send_button.setEnabled(True)
+        self.input_field.setEnabled(True)
+
+        # Показываем ошибку
+        self.append_to_chat(f"<span style='color: red;'>{error_msg}</span>", is_system=True)
+        self.input_field.setFocus()
+
+    def closeEvent(self, event):
+        """Важно! Останавливаем поток при закрытии окна"""
+        self.thread.quit()
+        self.thread.wait()
+        super().closeEvent(event)
 
     def append_to_chat(self, message, is_system=False):
         # Создаем виджет для сообщения с анимацией

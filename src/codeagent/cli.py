@@ -99,6 +99,10 @@ def bridge_common_run_options(func):
             help="Seconds before a single execution is killed.",
         ),
         click.option("-q", "--quiet", is_flag=True, help="Suppress step-by-step logs."),
+        click.option(
+            "-wd", "--workdir", default=None, show_default=True,
+            help="Working directory to run the code in.",
+        )
     ]
     for option in reversed(options):
         func = option(func)
