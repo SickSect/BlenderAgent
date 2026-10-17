@@ -105,6 +105,53 @@ with a plain subprocess.
 live in `src/codeagent/system_prompts/` as Markdown — edit them to change how
 each agent behaves.
 
+## Blender add-on: Game Asset Assistant
+
+The project is being reoriented from a code-gen CLI into an AI asset helper.
+The first integration is a Blender 4.2+ extension: an **AI Assistant** tab in
+the 3D Viewport sidebar (`N` panel) with a chat that knows your current scene.
+
+### Build & install
+
+```bash
+python tools/build_addon.py          # -> dist/game_asset_assistant-0.1.0.zip
+```
+
+Blender → *Edit → Preferences → Add-ons → Install from Disk*, pick the zip,
+enable the add-on, then configure it under the add-on's preferences:
+
+| Backend | Settings |
+|---|---|
+| **Ollama (local)** | host (default `http://localhost:11434`) + model, e.g. `qwen2.5-coder:7b` |
+| **External API** | OpenAI-compatible base URL + API key + model |
+
+The backend switch lives in the add-on preferences and can be flipped at any
+time; the API key is stored in Blender's preferences (plain text — prefer the
+local backend if that matters to you).
+
+### How it works
+
+```
+Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
+   (timers)       <--events.jsonl---  (own process)   <--stream--
+```
+
+- Requests are executed in a **separate worker process** (`asset_core/worker.py`).
+  Blender's API docs state that Python threads living past a script cause
+  hard-to-diagnose crashes, so the add-on never blocks and never spawns threads —
+  a `bpy.app.timers` callback polls two append-only JSONL files.
+- A compact **scene snapshot** (objects, transforms, polygons, UV, materials,
+  modifiers, selection) is injected into every request, so the model answers
+  about *your* scene. Toggleable in preferences.
+- `asset_core/` is Blender-independent (stdlib only) and is vendored into the
+  extension zip by `tools/build_addon.py`.
+
+### Roadmap for the add-on
+
+- Tool-calling: the model will execute real `bpy` tools (create/modify objects,
+  materials, export) over the same JSONL channel, executed on the main thread
+  with confirmation for destructive operations.
+
 ## Tests
 
 ```bash
