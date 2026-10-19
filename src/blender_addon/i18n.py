@@ -82,6 +82,19 @@ STRINGS = {
         "msg.pbr_empty": "В папке не нашлось карт (albedo/base, rough, metal, normal, orm, emit, height)",
         "msg.pbr_failed": "Не удалось собрать материал: {exc}",
         "prompt.snapshot_header": "## Снимок текущей сцены",
+        "prompt.skills_header": (
+            "## Инструкции по Blender (skills)\n"
+            "Содержимое инструкций тебе пока не передано — виден только список. "
+            "Если для задачи нужна подробная инструкция (точные имена сокетов, "
+            "порядок нод, отличия версий Blender), ответь РОВНО одним блоком:\n\n"
+            "```skill\n"
+            "<имя из списка>\n"
+            "```\n\n"
+            "и больше ничем: текст инструкции придёт следующим сообщением, и ты "
+            "продолжишь работу. Не запрашивай то, что уже есть в контексте — такие "
+            "инструкции помечены строкой `# skill: <имя>`.\n"
+            "Доступные инструкции:"
+        ),
         # -- material presets (ui.py + operators.py) ----------------------
         "presets.title": "Пресеты материалов",
         "preset.matte": "Матовый",
@@ -126,6 +139,7 @@ STRINGS = {
         "err.worker_died": "Работник неожиданно завершился (код {code}). Лог: {log}",
         "err.unknown": "Неизвестная ошибка воркера",
         "msg.empty_reply": "(пустой ответ)",
+        "msg.skill_loading": "Читаю инструкцию: {name}…",
         "msg.stopped": "[остановлено]",
         "msg.interrupted": "[ответ прерван]",
         # -- snapshot (snapshot.py) --------------------------------------
@@ -143,6 +157,7 @@ STRINGS = {
         "prefs.key_warning": "Ключ хранится в настройках Blender открытым текстом",
         "prefs.context_chars": "Бюджет контекста (символов)",
         "prefs.timeout": "Таймаут (сек)",
+        "prefs.num_ctx": "Контекст модели (токенов)",
         "prefs.snapshot": "Отправлять снимок сцены",
         "prefs.chat_box": "Окно чата",
     },
@@ -206,6 +221,19 @@ STRINGS = {
         "msg.pbr_empty": "No maps found in the folder (albedo/base, rough, metal, normal, orm, emit, height)",
         "msg.pbr_failed": "Could not build the material: {exc}",
         "prompt.snapshot_header": "## Current scene snapshot",
+        "prompt.skills_header": (
+            "## Blender instructions (skills)\n"
+            "The instruction texts are not in your context yet — only this list is. "
+            "When a task needs a detailed recipe (exact socket names, node order, "
+            "Blender version differences), answer with EXACTLY one block:\n\n"
+            "```skill\n"
+            "<name from the list>\n"
+            "```\n\n"
+            "and nothing else: the text arrives in the next message and you continue. "
+            "Never request what is already in context — those are marked with "
+            "`# skill: <name>`.\n"
+            "Available instructions:"
+        ),
         # -- material presets ---------------------------------------------
         "presets.title": "Material presets",
         "preset.matte": "Matte",
@@ -250,6 +278,7 @@ STRINGS = {
         "err.worker_died": "The worker exited unexpectedly (code {code}). Log: {log}",
         "err.unknown": "Unknown worker error",
         "msg.empty_reply": "(empty reply)",
+        "msg.skill_loading": "Reading skill: {name}…",
         "msg.stopped": "[stopped]",
         "msg.interrupted": "[reply interrupted]",
         # -- snapshot -----------------------------------------------------
@@ -267,6 +296,7 @@ STRINGS = {
         "prefs.key_warning": "The key is stored in Blender preferences as plain text",
         "prefs.context_chars": "Context budget (characters)",
         "prefs.timeout": "Timeout (sec)",
+        "prefs.num_ctx": "Model context (tokens)",
         "prefs.snapshot": "Send the scene snapshot",
         "prefs.chat_box": "Chat window",
     },

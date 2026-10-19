@@ -65,6 +65,20 @@ class GAA_Preferences(bpy.types.AddonPreferences):
     temperature: FloatProperty(
         name="Temperature", default=0.5, min=0.0, max=2.0
     )
+    num_ctx: IntProperty(
+        name="Контекст модели, токенов / Model context (tokens)",
+        description=(
+            "Размер контекстного окна, который запрашивается у бэкенда (num_ctx). "
+            "Больше — больше места под историю диалога и инструкции-skills, "
+            "но и больше памяти и времени на генерацию / "
+            "Context window requested from the backend (num_ctx); larger leaves "
+            "room for history and skill instructions, at the cost of memory"
+        ),
+        default=16384,
+        min=2048,
+        max=131072,
+        step=1024,
+    )
     include_snapshot: BoolProperty(
         name="Отправлять снимок сцены / Send the scene snapshot",
         description="Прикладывать к запросу состояние текущей сцены / Attach the current scene state to every request",
@@ -118,6 +132,7 @@ class GAA_Preferences(bpy.types.AddonPreferences):
 
         col = layout.column(align=True)
         col.prop(self, "temperature")
+        col.prop(self, "num_ctx", text=i18n.T("prefs.num_ctx"))
         col.prop(self, "context_chars", text=i18n.T("prefs.context_chars"))
         col.prop(self, "timeout", text=i18n.T("prefs.timeout"))
         layout.prop(self, "include_snapshot", text=i18n.T("prefs.snapshot"))
@@ -142,7 +157,12 @@ def get_prefs(context=None):
 def config_dict(prefs) -> dict:
     """Plain-dict backend config handed to the worker with every request."""
     if prefs is None:
-        return {"kind": "ollama", "host": "http://localhost:11434", "lang": "ru"}
+        return {
+            "kind": "ollama",
+            "host": "http://localhost:11434",
+            "num_ctx": 16384,
+            "lang": "ru",
+        }
     lang = (prefs.language or "RU").lower()
     if prefs.backend == "OPENAI":
         return {
@@ -151,6 +171,7 @@ def config_dict(prefs) -> dict:
             "model": prefs.api_model,
             "api_key": prefs.api_key,
             "temperature": prefs.temperature,
+            "num_ctx": int(prefs.num_ctx),
             "timeout": prefs.timeout,
             "lang": lang,
         }
@@ -159,6 +180,7 @@ def config_dict(prefs) -> dict:
         "host": prefs.ollama_host,
         "model": prefs.ollama_model,
         "temperature": prefs.temperature,
+        "num_ctx": int(prefs.num_ctx),
         "timeout": prefs.timeout,
         "lang": lang,
     }

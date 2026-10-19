@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 
 import bpy
 
-from . import i18n
+from . import i18n, skills
 
 ADDON_DIR = Path(__file__).resolve().parent
 EVENT_POLL_INTERVAL = 0.1     # seconds between timer ticks
@@ -36,12 +36,34 @@ _CODE_LANGS = ("", "python", "py", "bpy")
 
 
 def extract_last_code(text: str) -> str:
-    """Last fenced ```python block of an assistant reply ("" when none)."""
+    """Last fenced ```python block of an assistant reply ("" when none).
+
+    A bare fence (no language) holding nothing but a skill name is skipped:
+    that is the model asking for an instruction with the wrong block style, not
+    code the user should be offered to run.
+    """
+    names = {skill.name for skill in skill_library()}
     last = ""
     for lang, body in _CODE_BLOCK_RE.findall(text or ""):
-        if lang.lower() in _CODE_LANGS:
-            last = body
+        if lang.lower() not in _CODE_LANGS:
+            continue
+        if body.strip() in names:
+            continue
+        last = body
     return last.strip("\n")
+
+
+def skill_library() -> List[skills.Skill]:
+    """Instruction packs that apply to this Blender version.
+
+    Cached inside :mod:`skills`; never raises — a broken skills directory must
+    not take the chat down with it.
+    """
+    try:
+        return skills.get_skills(ADDON_DIR / skills.SKILLS_DIRNAME, tuple(bpy.app.version))
+    except Exception as exc:  # noqa: BLE001 - a chat must survive bad content
+        print(f"[AssetAssistant] skills unavailable: {exc}")
+        return []
 
 
 def build_messages(
@@ -178,6 +200,13 @@ class ChatState:
         self.pending_code: str = ""    # last ```python block, not run yet
         self.code_ran: bool = False    # True once "Run code" used that block
 
+        # Re-sending the same turn after a skill request needs the original
+        # prompt and transport settings kept around.
+        self.system_prompt: str = ""
+        self.last_config: Optional[dict] = None
+        self.last_max_chars: int = DEFAULT_CONTEXT_CHARS
+        self.skill_texts: List[tuple] = []  # (name, body) loaded for this turn
+
         self.proc: Optional[subprocess.Popen] = None
         self.tmpdir: Optional[Path] = None
         self.events_path: Optional[Path] = None
@@ -283,8 +312,70 @@ class ChatState:
         self.busy = True
         self.last_error = None
 
+        # Remember the turn's inputs: a skill request re-sends this same turn
+        # with the instruction appended to the system prompt.
+        self.system_prompt = system_prompt
+        self.last_config = config
+        self.last_max_chars = max_chars
+        self.skill_texts = []
+
         messages = build_messages(self.history, system_prompt, max_chars)
         self._write_command({"type": "chat", "config": config, "messages": messages})
+        ensure_timer()
+        return True
+
+    def _prompt_with_skills(self) -> str:
+        """System prompt plus every instruction pulled in for this turn."""
+        if not self.skill_texts:
+            return self.system_prompt
+        parts = [self.system_prompt]
+        for name, body in self.skill_texts:
+            parts.append(f"# skill: {name}\n\n{body}")
+        return "\n\n".join(parts)
+
+    def _requested_skill(self) -> Optional[str]:
+        """First skill the reply asked for that exists and is not loaded yet."""
+        wanted = skills.parse_skill_requests(self.stream_buf)
+        if not wanted:
+            return None
+        library = skill_library()
+        if not library:
+            return None
+        loaded = {name for name, _ in self.skill_texts}
+        for name in wanted:
+            if name in loaded:
+                continue
+            if skills.by_name(library, name) is not None:
+                return name
+        return None
+
+    def _fetch_skill(self, name: str) -> bool:
+        """Pull one instruction in and ask the model again.
+
+        Returns True while a new round trip is running, so the caller keeps the
+        session busy. Every fetch costs one extra request — the budget in
+        :data:`skills.MAX_SKILL_LOADS` keeps that in check.
+        """
+        if len(self.skill_texts) >= skills.MAX_SKILL_LOADS:
+            return False
+        if self.last_config is None or self.commands_path is None:
+            return False
+        skill = skills.by_name(skill_library(), name)
+        if skill is None:
+            return False
+
+        self.skill_texts.append((skill.name, skill.body))
+        set_last_display(i18n.T("msg.skill_loading", name=skill.name))
+        self.stream_buf = ""
+        self._write_command(
+            {
+                "type": "chat",
+                "config": self.last_config,
+                "messages": build_messages(
+                    self.history, self._prompt_with_skills(), self.last_max_chars
+                ),
+            }
+        )
         ensure_timer()
         return True
 
@@ -352,19 +443,29 @@ class ChatState:
             self.stream_buf += event.get("text", "")
             set_last_display(self.stream_buf)
         elif kind == "done":
-            if self.stream_buf:
-                self.history.append(
-                    {"role": "assistant", "content": self.stream_buf}
-                )
-                self.pending_code = extract_last_code(self.stream_buf)
-                self.code_ran = False
-            else:
-                set_last_display(i18n.T("msg.empty_reply"))
-                drop_last_display_if_empty()
-            self.busy = False
-            self.stream_buf = ""
+            # A reply that only asks for an instruction pack is not an answer:
+            # pull the text in and re-send the same turn (bounded).
+            name = self._requested_skill()
+            if name is not None and self._fetch_skill(name):
+                return
+            self._finish_reply()
         elif kind == "error":
             self._fail(event.get("message") or i18n.T("err.unknown"))
+
+    def _finish_reply(self) -> None:
+        """Close the turn: drop request blocks, keep code, release busy."""
+        text = skills.strip_skill_requests(self.stream_buf)
+        if text.strip():
+            self.history.append({"role": "assistant", "content": text})
+            self.pending_code = extract_last_code(text)
+            self.code_ran = False
+            if text != self.stream_buf:
+                set_last_display(text)
+        else:
+            set_last_display(i18n.T("msg.empty_reply"))
+        self.busy = False
+        self.stream_buf = ""
+        self.skill_texts = []
 
     def _fail(self, message: str) -> None:
         self.last_error = message
@@ -386,6 +487,9 @@ class ChatState:
         self.last_error = None
         self.pending_code = ""
         self.code_ran = False
+        self.system_prompt = ""
+        self.last_config = None
+        self.skill_texts = []
 
 
 _state = ChatState()

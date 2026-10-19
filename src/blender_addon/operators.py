@@ -9,7 +9,7 @@ from contextlib import redirect_stdout
 import bpy
 from bpy.props import StringProperty
 
-from . import i18n, materials, preferences, prompts, snapshot, state, ui
+from . import i18n, materials, preferences, prompts, skills, snapshot, state, ui
 
 _POPUP_WIDTH = 480
 _CODE_TEXT_NAME = "AI Assistant Code"
@@ -19,6 +19,13 @@ def _system_prompt(context) -> str:
     prefs = preferences.get_prefs(context)
     lang = prefs.language.lower() if prefs is not None else i18n.DEFAULT_LANG
     text = prompts.system_prompt(lang)
+
+    # The catalog is always present; a body is only pulled in when the model
+    # asks for it (state.py handles that round trip).
+    catalog = skills.catalog(state.skill_library())
+    if catalog:
+        text += "\n\n" + i18n.T("prompt.skills_header") + "\n" + catalog
+
     include = prefs.include_snapshot if prefs is not None else True
     if include:
         try:

@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "asset_assistant"
-version = "0.4.4"
+version = "0.5.0"
 name = "Asset Assistant"
 tagline = "AI chat assistant for modeling and asset creation"
 maintainer = "Aleksei Zalogin"

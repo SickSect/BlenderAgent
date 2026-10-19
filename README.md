@@ -114,13 +114,13 @@ the 3D Viewport sidebar (`N` panel) with a chat that knows your current scene.
 > 📖 **Textbook (`docs/`).** A from-scratch, teacher-style walkthrough of the
 > code — Blender API basics, the add-on architecture, the chat/worker protocol,
 > running AI code safely, materials/texturing recipes with runnable examples,
-> the scene snapshot, and Blender's window/editor system:
+> the scene snapshot, Blender's window/editor system, and the skill library:
 > [`docs/`](docs/README.md). It is written in Russian.
 
 ### Build & install
 
 ```bash
-python tools/build_addon.py          # -> dist/asset_assistant-0.4.4.zip
+python tools/build_addon.py          # -> dist/asset_assistant-0.5.0.zip
 ```
 
 Blender → *Edit → Preferences → Add-ons → Install from Disk*, pick the zip,
@@ -134,6 +134,24 @@ enable the add-on, then configure it under the add-on's preferences:
 The backend switch lives in the add-on preferences and can be flipped at any
 time; the API key is stored in Blender's preferences (plain text — prefer the
 local backend if that matters to you).
+
+### Skills
+
+Beyond the prompt, the assistant has a small library of **skill** files
+(`src/blender_addon/skills/*.md`): Principled inputs, colour spaces, PBR maps,
+glass, metals, normal maps, ORM packing. The system prompt carries only a
+one-line catalog; when a task needs detail the model answers with
+
+````
+```skill
+material-glass
+```
+````
+
+and the add-on appends that instruction to the prompt and asks again (at most
+two such round trips per question). Skill code samples are executed inside
+Blender by `tests/run_skills_check.py`, so they cannot silently drift away from
+the API.
 
 ### Interface language
 
@@ -278,21 +296,38 @@ Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
   Toggleable in preferences.
 - `asset_core/` is Blender-independent (stdlib only) and is vendored into the
   extension zip by `tools/build_addon.py`.
+- **Skills**: verified instruction packs (`skills/*.md`) the model can pull in
+  on demand. The system prompt always carries a one-line catalog; when a task
+  needs detail the model answers with a ```skill``` block, the add-on appends
+  that instruction to the prompt and asks again. Bodies are written in English
+  (half the tokens, and the model knows the API better in English), live in git,
+  and every ```python block in them is executed by `tests/run_skills_check.py`
+  on the running Blender — a renamed socket is caught before a user sees it.
 
 ### Roadmap for the add-on
 
 - Materials & texturing through the assistant (in progress): the scene snapshot
   now covers materials and images, the chat can open the Shader/Image editor on
-  the active material, and "PBR from folder" builds a textured material in one
-  click. Still to come: node quick actions, generating/packing/backing textures.
+  the active material, "PBR from folder" builds a textured material in one
+  click, and skills ship verified recipes for glass, metals, normal maps, ORM
+  packs and colour spaces. Still to come: node quick actions,
+  generating/packing/backing textures.
 - Tool-calling over the JSONL channel: real `bpy` tools (create/modify objects,
   materials, export) executed on the main thread with confirmation for
-  destructive operations, plus teaching the model to use extra add-ons.
+  destructive operations, plus teaching the model to use extra add-ons. The
+  skill protocol is the first half of this.
 
 ## Tests
 
 ```bash
 pytest -q
+```
+
+The skill library has two levels of checks; the second one needs Blender and
+executes every code sample the assistant can be handed:
+
+```bash
+blender --background --factory-startup --python tests/run_skills_check.py
 ```
 
 Integration tests need a running Ollama and are skipped by default:
