@@ -9,6 +9,8 @@ callbacks on the main thread.
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,11 +21,27 @@ from typing import Dict, List, Optional
 
 import bpy
 
+from . import i18n
+
 ADDON_DIR = Path(__file__).resolve().parent
 EVENT_POLL_INTERVAL = 0.1     # seconds between timer ticks
 MAX_DISPLAY_CHARS = 8000      # per-message cap for the on-screen copy
 DEFAULT_CONTEXT_CHARS = 24000 # model-facing history budget
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+# ```python\n...\n``` — the last python block of a reply is what the user may
+# run with the "Выполнить код" button.
+_CODE_BLOCK_RE = re.compile(r"```([A-Za-z0-9_+-]*)[ \t]*\n(.*?)```", re.DOTALL)
+_CODE_LANGS = ("", "python", "py", "bpy")
+
+
+def extract_last_code(text: str) -> str:
+    """Last fenced ```python block of an assistant reply ("" when none)."""
+    last = ""
+    for lang, body in _CODE_BLOCK_RE.findall(text or ""):
+        if lang.lower() in _CODE_LANGS:
+            last = body
+    return last.strip("\n")
 
 
 def build_messages(
@@ -130,6 +148,12 @@ def drop_last_display_if_empty() -> None:
 
 
 def _redraw() -> None:
+    """Tag every area AND region for redraw.
+
+    Tagging regions as well matters for the chat popup window: it lives in a
+    temporary region that area.tag_redraw() alone does not always repaint,
+    which would freeze the streaming text until the mouse moves.
+    """
     wm = _wm()
     if wm is None:
         return
@@ -139,6 +163,8 @@ def _redraw() -> None:
             continue
         for area in screen.areas:
             area.tag_redraw()
+            for region in area.regions:
+                region.tag_redraw()
 
 
 class ChatState:
@@ -149,6 +175,8 @@ class ChatState:
         self.busy = False
         self.stream_buf = ""           # assistant text accumulated so far
         self.last_error: Optional[str] = None
+        self.pending_code: str = ""    # last ```python block, not run yet
+        self.code_ran: bool = False    # True once "Run code" used that block
 
         self.proc: Optional[subprocess.Popen] = None
         self.tmpdir: Optional[Path] = None
@@ -170,13 +198,11 @@ class ChatState:
 
         script = _worker_script()
         if script is None:
-            self.last_error = "Не найден asset_core/worker.py рядом с аддоном"
+            self.last_error = i18n.T("err.no_worker")
             return False
         python = find_python()
         if python is None:
-            self.last_error = (
-                "Не найден Python 3.9+ (в комплекте Blender или в PATH)"
-            )
+            self.last_error = i18n.T("err.no_python")
             return False
 
         self.tmpdir = Path(tempfile.mkdtemp(prefix="gaa_"))
@@ -191,15 +217,24 @@ class ChatState:
         try:
             self._stderr = open(self.log_path, "w", encoding="utf-8")
             self.proc = subprocess.Popen(
-                [python, str(script), str(self.events_path), str(self.commands_path)],
-                cwd=str(script.parent),
+                [
+                    python,
+                    str(script),
+                    str(self.events_path),
+                    str(self.commands_path),
+                    str(os.getpid()),  # lets the worker notice our death
+                ],
+                # Run from our temp dir, never from the add-on folder: a worker
+                # left behind by a Blender crash would otherwise keep the
+                # extension directory locked ("Access is denied" on reinstall).
+                cwd=str(self.tmpdir),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=self._stderr,
                 creationflags=CREATE_NO_WINDOW,
             )
         except OSError as exc:
-            self.last_error = f"Не удалось запустить воркер: {exc}"
+            self.last_error = i18n.T("err.worker_start", exc=exc)
             self.proc = None
             return False
 
@@ -286,11 +321,13 @@ class ChatState:
     def pump(self) -> None:
         if self.proc is None:
             return
-        for event in self._read_events():
+        events = self._read_events()
+        for event in events:
             self._handle(event)
 
         code = self.proc.poll()
-        if code is not None:
+        exited = code is not None
+        if exited:
             # The worker exited. If we still expect text, that is a failure.
             log = self.log_path
             self.proc = None
@@ -302,10 +339,12 @@ class ChatState:
                 self._stderr = None
             if self.busy:
                 self._fail(
-                    f"Работник неожиданно завершился (код {code}). "
-                    f"Лог: {log}"
+                    i18n.T("err.worker_died", code=code, log=log)
                 )
-        _redraw()
+        # Redraw only when something changed: the timer ticks at 10 Hz and an
+        # unconditional tag_redraw() would keep repainting the whole UI idle.
+        if events or exited:
+            _redraw()
 
     def _handle(self, event: dict) -> None:
         kind = event.get("type")
@@ -317,19 +356,21 @@ class ChatState:
                 self.history.append(
                     {"role": "assistant", "content": self.stream_buf}
                 )
+                self.pending_code = extract_last_code(self.stream_buf)
+                self.code_ran = False
             else:
-                set_last_display("(пустой ответ)")
+                set_last_display(i18n.T("msg.empty_reply"))
                 drop_last_display_if_empty()
             self.busy = False
             self.stream_buf = ""
         elif kind == "error":
-            self._fail(event.get("message") or "Неизвестная ошибка воркера")
+            self._fail(event.get("message") or i18n.T("err.unknown"))
 
     def _fail(self, message: str) -> None:
         self.last_error = message
         if self.stream_buf:
             self.history.append({"role": "assistant", "content": self.stream_buf})
-            set_last_display(self.stream_buf + "\n\n[ответ прерван]")
+            set_last_display(self.stream_buf + "\n\n" + i18n.T("msg.interrupted"))
             self.stream_buf = ""
         else:
             drop_last_display_if_empty()
@@ -343,6 +384,8 @@ class ChatState:
         self.stream_buf = ""
         self.busy = False
         self.last_error = None
+        self.pending_code = ""
+        self.code_ran = False
 
 
 _state = ChatState()
@@ -374,5 +417,5 @@ def _timer_cb():
     try:
         state.pump()
     except Exception as exc:  # a timer callback must never raise silently
-        print(f"[GameAssetAssistant] pump error: {exc}")
+        print(f"[AssetAssistant] pump error: {exc}")
     return EVENT_POLL_INTERVAL

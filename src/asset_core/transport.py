@@ -34,6 +34,7 @@ class BackendConfig:
     temperature: float = 0.5
     num_ctx: int = 4096
     timeout: int = 180
+    lang: str = "ru"                      # error-message language ("ru"/"en")
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "BackendConfig":
@@ -52,7 +53,34 @@ class BackendConfig:
             "temperature": self.temperature,
             "num_ctx": self.num_ctx,
             "timeout": self.timeout,
+            "lang": self.lang,
         }
+
+
+# Transport errors surface in the chat, so they follow the UI language. Kept
+# local to this module: the worker runs outside Blender and must not import
+# the add-on's i18n tables.
+_ERRORS = {
+    "ru": {
+        "http": "HTTP {code} от {url}: {body}",
+        "noconn": "Нет соединения с {url}: {reason}",
+        "timeout": "Таймаут ({timeout} c) при запросе к {url}",
+        "net": "Сетевая ошибка: {exc}",
+        "ollama": "Ollama: {message}",
+    },
+    "en": {
+        "http": "HTTP {code} from {url}: {body}",
+        "noconn": "No connection to {url}: {reason}",
+        "timeout": "Timeout ({timeout} s) while requesting {url}",
+        "net": "Network error: {exc}",
+        "ollama": "Ollama: {message}",
+    },
+}
+
+
+def _err(lang: str, key: str, **fmt) -> str:
+    table = _ERRORS.get(lang or "ru") or _ERRORS["ru"]
+    return table[key].format(**fmt)
 
 
 def stream_chat(config: BackendConfig, messages: List[Message]) -> Iterator[str]:
@@ -87,10 +115,10 @@ def _ollama_stream(config: BackendConfig, messages: List[Message]) -> Iterator[s
     )
     with _open(request, config) as response:
         lines = (raw.decode("utf-8", "replace") for raw in response)
-        yield from parse_ollama_lines(lines)
+        yield from parse_ollama_lines(lines, lang=config.lang)
 
 
-def parse_ollama_lines(lines: Iterable[str]) -> Iterator[str]:
+def parse_ollama_lines(lines: Iterable[str], lang: str = "ru") -> Iterator[str]:
     """Extract assistant content from an Ollama NDJSON stream."""
     for raw in lines:
         raw = raw.strip()
@@ -101,7 +129,7 @@ def parse_ollama_lines(lines: Iterable[str]) -> Iterator[str]:
         except json.JSONDecodeError:
             continue
         if isinstance(obj, dict) and obj.get("error"):
-            raise TransportError(f"Ollama: {obj['error']}")
+            raise TransportError(_err(lang, "ollama", message=obj["error"]))
         message = obj.get("message") or {}
         content = message.get("content")
         if content:
@@ -177,14 +205,16 @@ def _open(request: urllib.request.Request, config: BackendConfig):
             body = exc.read().decode("utf-8", "replace")[:500]
         except Exception:
             body = ""
-        raise TransportError(f"HTTP {exc.code} от {request.full_url}: {body}") from exc
+        raise TransportError(
+            _err(config.lang, "http", code=exc.code, url=request.full_url, body=body)
+        ) from exc
     except urllib.error.URLError as exc:
         raise TransportError(
-            f"Нет соединения с {request.full_url}: {exc.reason}"
+            _err(config.lang, "noconn", url=request.full_url, reason=exc.reason)
         ) from exc
     except TimeoutError as exc:
         raise TransportError(
-            f"Таймаут ({config.timeout} c) при запросе к {request.full_url}"
+            _err(config.lang, "timeout", timeout=config.timeout, url=request.full_url)
         ) from exc
     except OSError as exc:
-        raise TransportError(f"Сетевая ошибка: {exc}") from exc
+        raise TransportError(_err(config.lang, "net", exc=exc)) from exc

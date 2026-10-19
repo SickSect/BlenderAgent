@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
-id = "game_asset_assistant"
-version = "0.1.0"
-name = "Game Asset Assistant"
-tagline = "AI chat assistant for modeling and game-asset creation"
+id = "asset_assistant"
+version = "0.4.1"
+name = "Asset Assistant"
+tagline = "AI chat assistant for modeling and asset creation"
 maintainer = "Aleksei Zalogin"
 type = "add-on"
 

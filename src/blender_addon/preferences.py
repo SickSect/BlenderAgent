@@ -1,4 +1,4 @@
-"""Add-on preferences: backend switch (local Ollama / external API by key)."""
+"""Add-on preferences: language, backend switch (local Ollama / external API)."""
 
 from __future__ import annotations
 
@@ -11,76 +11,120 @@ from bpy.props import (
     StringProperty,
 )
 
+from . import i18n
+
+
+def _on_language_update(self, _context):
+    """Operator labels/tooltips are RNA-baked: re-register to retranslate them."""
+    # Local import: operators.py imports this module at load time.
+    from . import operators
+
+    operators.refresh_labels()
+
 
 class GAA_Preferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
-    backend: EnumProperty(
-        name="Бэкенд",
+    language: EnumProperty(
+        name="Язык / Language",
+        description="Язык интерфейса аддона / Add-on interface language",
         items=[
-            ("OLLAMA", "Ollama (локальная)", "Локальная модель через Ollama"),
-            ("OPENAI", "Внешний API", "OpenAI-совместимый API по ключу"),
+            ("RU", "Русский", "Интерфейс аддона на русском"),
+            ("EN", "English", "Add-on interface in English"),
+        ],
+        default="RU",
+        update=_on_language_update,
+    )
+
+    backend: EnumProperty(
+        name="Бэкенд / Backend",
+        items=[
+            ("OLLAMA", "Ollama", "Локальная модель через Ollama / Local model via Ollama"),
+            ("OPENAI", "OpenAI API", "OpenAI-совместимый API по ключу / OpenAI-compatible API by key"),
         ],
         default="OLLAMA",
     )
 
     ollama_host: StringProperty(
-        name="Адрес Ollama", default="http://localhost:11434"
+        name="Адрес Ollama / Ollama host", default="http://localhost:11434"
     )
     ollama_model: StringProperty(
-        name="Модель Ollama", default="qwen2.5-coder:7b"
+        name="Модель Ollama / Ollama model", default="qwen2.5-coder:7b"
     )
 
     api_base_url: StringProperty(
         name="Base URL", default="https://api.openai.com/v1"
     )
-    api_key: StringProperty(name="API-ключ", subtype="PASSWORD", default="")
-    api_model: StringProperty(name="Модель API", default="gpt-4o-mini")
+    api_key: StringProperty(
+        name="API-ключ / API key", subtype="PASSWORD", default=""
+    )
+    api_model: StringProperty(
+        name="Модель API / API model", default="gpt-4o-mini"
+    )
 
     temperature: FloatProperty(
         name="Temperature", default=0.5, min=0.0, max=2.0
     )
     include_snapshot: BoolProperty(
-        name="Отправлять снимок сцены",
-        description="Прикладывать к запросу состояние текущей сцены",
+        name="Отправлять снимок сцены / Send the scene snapshot",
+        description="Прикладывать к запросу состояние текущей сцены / Attach the current scene state to every request",
         default=True,
     )
     context_chars: IntProperty(
-        name="Бюджет контекста (символов)",
-        description="Сколько символов истории отправляется модели",
+        name="Бюджет контекста, символов / Context budget (characters)",
+        description="Сколько символов истории отправляется модели / How many characters of history are sent to the model",
         default=24000,
         min=2000,
         max=200000,
     )
+    chat_width: IntProperty(
+        name="Ширина окна чата / Chat window width (px)",
+        description=(
+            "Ширина всплывающего окна чата (Ctrl+Alt+A), включая поле ввода "
+            "и историю; переносы текста подстраиваются под неё / "
+            "Popup chat width (Ctrl+Alt+A); text wrapping follows it"
+        ),
+        default=560,
+        min=300,
+        max=1400,
+        soft_max=900,
+        step=10,
+    )
     timeout: IntProperty(
-        name="Таймаут (сек)", default=180, min=10, max=600
+        name="Таймаут, сек / Timeout (sec)", default=180, min=10, max=600
     )
 
     def draw(self, context):
         layout = self.layout
+
+        layout.prop(self, "language", text=i18n.T("prefs.language"))
 
         row = layout.row(align=True)
         row.prop(self, "backend", expand=True)
 
         box = layout.box()
         if self.backend == "OLLAMA":
-            box.prop(self, "ollama_host")
-            box.prop(self, "ollama_model")
-            box.label(text="Модель: ollama pull qwen2.5-coder:7b", icon="INFO")
+            box.prop(self, "ollama_host", text=i18n.T("prefs.ollama_host"))
+            box.prop(self, "ollama_model", text=i18n.T("prefs.ollama_model"))
+            box.label(text=i18n.T("prefs.ollama_hint"), icon="INFO")
         else:
             box.prop(self, "api_base_url")
-            box.prop(self, "api_key")
-            box.prop(self, "api_model")
+            box.prop(self, "api_key", text=i18n.T("prefs.api_key"))
+            box.prop(self, "api_model", text=i18n.T("prefs.api_model"))
             box.label(
-                text="Ключ хранится в настройках Blender открытым текстом",
+                text=i18n.T("prefs.key_warning"),
                 icon="ERROR",
             )
 
         col = layout.column(align=True)
         col.prop(self, "temperature")
-        col.prop(self, "context_chars")
-        col.prop(self, "timeout")
-        layout.prop(self, "include_snapshot")
+        col.prop(self, "context_chars", text=i18n.T("prefs.context_chars"))
+        col.prop(self, "timeout", text=i18n.T("prefs.timeout"))
+        layout.prop(self, "include_snapshot", text=i18n.T("prefs.snapshot"))
+
+        box = layout.box()
+        box.label(text=i18n.T("prefs.chat_box"), icon="WINDOW")
+        box.prop(self, "chat_width")
 
 
 def get_prefs(context=None):
@@ -98,7 +142,8 @@ def get_prefs(context=None):
 def config_dict(prefs) -> dict:
     """Plain-dict backend config handed to the worker with every request."""
     if prefs is None:
-        return {"kind": "ollama", "host": "http://localhost:11434"}
+        return {"kind": "ollama", "host": "http://localhost:11434", "lang": "ru"}
+    lang = (prefs.language or "RU").lower()
     if prefs.backend == "OPENAI":
         return {
             "kind": "openai",
@@ -107,6 +152,7 @@ def config_dict(prefs) -> dict:
             "api_key": prefs.api_key,
             "temperature": prefs.temperature,
             "timeout": prefs.timeout,
+            "lang": lang,
         }
     return {
         "kind": "ollama",
@@ -114,6 +160,7 @@ def config_dict(prefs) -> dict:
         "model": prefs.ollama_model,
         "temperature": prefs.temperature,
         "timeout": prefs.timeout,
+        "lang": lang,
     }
 
 

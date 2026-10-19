@@ -6,6 +6,8 @@ import math
 
 import bpy
 
+from . import i18n
+
 MAX_OBJECTS = 40
 
 
@@ -79,7 +81,7 @@ def build_snapshot(max_objects: int = MAX_OBJECTS) -> str:
     for obj in objects[:max_objects]:
         lines.append(_describe(obj))
     if len(objects) > max_objects:
-        lines.append(f"... и ещё {len(objects) - max_objects} объектов")
+        lines.append(i18n.T("snapshot.more_objects", n=len(objects) - max_objects))
 
     try:
         selected = [o.name for o in bpy.context.selected_objects]

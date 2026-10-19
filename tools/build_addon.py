@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Build the Blender extension zip for the Game Asset Assistant.
+"""Build the Blender extension zip for the Asset Assistant.
 
 Vendors ``src/asset_core`` into the add-on so the archive is self-contained:
 
-    dist/game_asset_assistant-<version>.zip
+    dist/asset_assistant-<version>.zip
     ├── blender_manifest.toml
     ├── __init__.py
     ├── ...add-on modules...
@@ -12,7 +12,7 @@ Vendors ``src/asset_core`` into the add-on so the archive is self-contained:
 Install with Edit > Preferences > Add-ons > Install from Disk (Blender 4.2+),
 or validate first:
 
-    blender --command extension validate dist/game_asset_assistant-0.1.0.zip
+    blender --command extension validate dist/asset_assistant-0.1.0.zip
 
 If BLENDER_BIN is set, validation runs automatically after the build.
 """
@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ADDON_SRC = ROOT / "src" / "blender_addon"
 CORE_SRC = ROOT / "src" / "asset_core"
 DIST = ROOT / "dist"
-PACKAGE_ID = "game_asset_assistant"
+PACKAGE_ID = "asset_assistant"
 EXCLUDE_PATTERNS = ("__pycache__", "*.pyc", "*.pyo")
 
 

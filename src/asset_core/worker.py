@@ -18,7 +18,10 @@ Protocol (one JSON object per line):
   events:   {"type": "chunk", "text": "..."} | {"type": "done"}
             {"type": "error", "message": "..."} | {"type": "pong"} | {"type": "bye"}
 
-Usage: ``python worker.py <events.jsonl> <commands.jsonl>``
+Usage: ``python worker.py <events.jsonl> <commands.jsonl> [parent-pid]``
+
+The optional parent pid lets the worker notice that the host died (even a
+hard Blender crash that runs no cleanup) and exit instead of lingering.
 
 The same channel will carry tool-call requests/results in a later phase,
 executed on the Blender main thread.
@@ -27,6 +30,7 @@ executed on the Blender main thread.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -107,10 +111,59 @@ def handle_chat(writer: JsonlWriter, command: dict) -> None:
         writer.emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
 
 
+def _start_parent_watchdog(parent_pid: int) -> None:
+    """Exit as soon as the host process (Blender) is gone.
+
+    A hard Blender crash runs no cleanup, so without this the worker would stay
+    alive forever — and, because it used to be started with its cwd inside the
+    add-on folder, it would keep that folder locked and make reinstalling the
+    extension fail with "Access is denied".
+    """
+    if parent_pid <= 0:
+        return
+    try:
+        import threading
+    except Exception:
+        return
+
+    def _wait() -> None:
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                SYNCHRONIZE = 0x00100000
+                INFINITE = 0xFFFFFFFF
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
+                if handle:
+                    kernel32.WaitForSingleObject(handle, INFINITE)
+                    os._exit(0)
+                    return
+            except Exception:
+                pass  # fall through to the polling loop
+        while True:
+            try:
+                os.kill(parent_pid, 0)
+            except OSError:
+                os._exit(0)
+            time.sleep(1.0)
+
+    threading.Thread(target=_wait, name="parent-watchdog", daemon=True).start()
+
+
 def main(argv: List[str]) -> int:
-    if len(argv) != 3:
-        print("usage: worker.py <events.jsonl> <commands.jsonl>", file=sys.stderr)
+    if len(argv) < 3:
+        print(
+            "usage: worker.py <events.jsonl> <commands.jsonl> [parent-pid]",
+            file=sys.stderr,
+        )
         return 2
+
+    if len(argv) >= 4:
+        try:
+            _start_parent_watchdog(int(argv[3]))
+        except ValueError:
+            pass
 
     events = JsonlWriter(argv[1])
     commands = JsonlReader(argv[2])
