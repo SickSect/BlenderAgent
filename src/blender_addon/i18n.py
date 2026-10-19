@@ -56,6 +56,14 @@ STRINGS = {
         "op.run_code.desc": "Выполнить последний bpy-код из ответа ассистента в текущей сцене",
         "op.code_to_text.label": "В Text Editor",
         "op.code_to_text.desc": "Сохранить последний код ассистента в Text Editor",
+        "op.open_shader.label": "Shader Editor",
+        "op.open_shader.desc": "Открыть Shader Editor для материала активного объекта",
+        "op.open_image.label": "Image Editor",
+        "op.open_image.desc": "Открыть Image Editor для текстуры активного материала",
+        "op.use_preset.label": "Пресет материала",
+        "op.use_preset.desc": "Подставить готовый запрос в поле ввода чата",
+        "op.pbr_folder.label": "PBR из папки",
+        "op.pbr_folder.desc": "Собрать PBR-материал из текстурных карт в выбранной папке",
         "msg.code_done": "Код выполнен.",
         "msg.output": "Вывод:",
         "msg.code_error": "Ошибка выполнения кода:",
@@ -63,7 +71,54 @@ STRINGS = {
         "msg.window_failed": "Не удалось открыть окно чата: {exc}",
         "msg.settings_failed": "Не удалось открыть настройки: {exc}",
         "msg.send_failed": "Не удалось отправить запрос",
+        "msg.editor_no_area": "Не нашёл область экрана для редактора",
+        "msg.editor_failed": "Не удалось настроить редактор: {exc}",
+        "msg.no_material": "У активного объекта нет материала",
+        "msg.no_image": "В файле нет изображений",
+        "msg.shader_opened": "Shader Editor: материал «{name}»",
+        "msg.image_opened": "Image Editor: «{name}»",
+        "msg.pbr_done": "Материал «{name}»: {maps}",
+        "msg.pbr_assigned": "назначен объекту «{obj}»",
+        "msg.pbr_empty": "В папке не нашлось карт (albedo/base, rough, metal, normal, orm, emit, height)",
+        "msg.pbr_failed": "Не удалось собрать материал: {exc}",
         "prompt.snapshot_header": "## Снимок текущей сцены",
+        # -- material presets (ui.py + operators.py) ----------------------
+        "presets.title": "Пресеты материалов",
+        "preset.matte": "Матовый",
+        "preset.metal": "Металл",
+        "preset.glass": "Стекло",
+        "preset.emission": "Эмиссия",
+        "preset.pbr": "PBR",
+        "preset.matte.text": (
+            "Сделай выделенному объекту матовый материал: Principled BSDF, "
+            "Base Color тёмно-красный, Roughness 0.9, Metallic 0. Назначь его объекту."
+        ),
+        "preset.metal.text": (
+            "Сделай выделенному объекту металлический материал: Metallic 1.0, "
+            "Roughness 0.25, светлый Base Color. Назначь его объекту."
+        ),
+        "preset.glass.text": (
+            "Сделай выделенному объекту стеклянный материал: Principled BSDF, "
+            "Transmission Weight 1.0, Roughness 0.0, IOR 1.45, Base Color белый. "
+            "Назначь его объекту."
+        ),
+        "preset.emission.text": (
+            "Сделай выделенному объекту эмиссионный материал: Emission Color "
+            "тёплый белый, Emission Strength 5.0."
+        ),
+        "preset.pbr.text": (
+            "Создай выделенному объекту PBR-материал из текстур в папке <путь>: "
+            "albedo подключи как Base Color (sRGB), normal/roughness/metallic — "
+            "как данные (Non-Color). Используй data API и не плоди дубликаты материалов."
+        ),
+        # -- PBR from folder (materials.py + operators.py) ----------------
+        "pbr.map.base": "основной цвет",
+        "pbr.map.normal": "нормаль",
+        "pbr.map.rough": "шероховатость",
+        "pbr.map.metal": "металличность",
+        "pbr.map.orm": "ORM",
+        "pbr.map.emit": "эмиссия",
+        "pbr.map.height": "высота",
         # -- state (state.py) --------------------------------------------
         "err.no_worker": "Не найден asset_core/worker.py рядом с аддоном",
         "err.no_python": "Не найден Python 3.9+ (в комплекте Blender или в PATH)",
@@ -75,6 +130,8 @@ STRINGS = {
         "msg.interrupted": "[ответ прерван]",
         # -- snapshot (snapshot.py) --------------------------------------
         "snapshot.more_objects": "... и ещё {n} объектов",
+        "snapshot.more_materials": "... и ещё {n} материалов",
+        "snapshot.more_images": "... и ещё {n} изображений",
         # -- preferences (preferences.py) --------------------------------
         "prefs.language": "Язык интерфейса",
         "prefs.backend": "Бэкенд",
@@ -123,6 +180,14 @@ STRINGS = {
         "op.run_code.desc": "Run the last bpy code from an assistant reply in the current scene",
         "op.code_to_text.label": "To Text Editor",
         "op.code_to_text.desc": "Save the last assistant code to a Text Editor block",
+        "op.open_shader.label": "Shader Editor",
+        "op.open_shader.desc": "Open the Shader Editor on the active object's material",
+        "op.open_image.label": "Image Editor",
+        "op.open_image.desc": "Open the Image Editor on the active material's texture",
+        "op.use_preset.label": "Material preset",
+        "op.use_preset.desc": "Insert a ready-made request into the chat input",
+        "op.pbr_folder.label": "PBR from folder",
+        "op.pbr_folder.desc": "Build a PBR material from the texture maps in a chosen folder",
         "msg.code_done": "Code executed.",
         "msg.output": "Output:",
         "msg.code_error": "Code execution error:",
@@ -130,7 +195,54 @@ STRINGS = {
         "msg.window_failed": "Failed to open the chat window: {exc}",
         "msg.settings_failed": "Failed to open the settings: {exc}",
         "msg.send_failed": "Failed to send the request",
+        "msg.editor_no_area": "No screen area available for the editor",
+        "msg.editor_failed": "Failed to set up the editor: {exc}",
+        "msg.no_material": "The active object has no material",
+        "msg.no_image": "The file has no images",
+        "msg.shader_opened": "Shader Editor: material «{name}»",
+        "msg.image_opened": "Image Editor: «{name}»",
+        "msg.pbr_done": "Material «{name}»: {maps}",
+        "msg.pbr_assigned": "assigned to «{obj}»",
+        "msg.pbr_empty": "No maps found in the folder (albedo/base, rough, metal, normal, orm, emit, height)",
+        "msg.pbr_failed": "Could not build the material: {exc}",
         "prompt.snapshot_header": "## Current scene snapshot",
+        # -- material presets ---------------------------------------------
+        "presets.title": "Material presets",
+        "preset.matte": "Matte",
+        "preset.metal": "Metal",
+        "preset.glass": "Glass",
+        "preset.emission": "Emission",
+        "preset.pbr": "PBR",
+        "preset.matte.text": (
+            "Give the selected object a matte material: Principled BSDF, "
+            "dark red Base Color, Roughness 0.9, Metallic 0. Assign it to the object."
+        ),
+        "preset.metal.text": (
+            "Give the selected object a metallic material: Metallic 1.0, "
+            "Roughness 0.25, light Base Color. Assign it to the object."
+        ),
+        "preset.glass.text": (
+            "Give the selected object a glass material: Principled BSDF, "
+            "Transmission Weight 1.0, Roughness 0.0, IOR 1.45, white Base Color. "
+            "Assign it to the object."
+        ),
+        "preset.emission.text": (
+            "Give the selected object an emissive material: warm white "
+            "Emission Color, Emission Strength 5.0."
+        ),
+        "preset.pbr.text": (
+            "Build a PBR material for the selected object from textures in <path>: "
+            "albedo as Base Color (sRGB), normal/roughness/metallic as data "
+            "(Non-Color). Use the data API and do not create duplicate materials."
+        ),
+        # -- PBR from folder ----------------------------------------------
+        "pbr.map.base": "base color",
+        "pbr.map.normal": "normal",
+        "pbr.map.rough": "roughness",
+        "pbr.map.metal": "metallic",
+        "pbr.map.orm": "ORM",
+        "pbr.map.emit": "emission",
+        "pbr.map.height": "height",
         # -- state --------------------------------------------------------
         "err.no_worker": "asset_core/worker.py not found next to the add-on",
         "err.no_python": "Python 3.9+ not found (bundled with Blender or on PATH)",
@@ -142,6 +254,8 @@ STRINGS = {
         "msg.interrupted": "[reply interrupted]",
         # -- snapshot -----------------------------------------------------
         "snapshot.more_objects": "... and {n} more objects",
+        "snapshot.more_materials": "... and {n} more materials",
+        "snapshot.more_images": "... and {n} more images",
         # -- preferences --------------------------------------------------
         "prefs.language": "Interface language",
         "prefs.backend": "Backend",

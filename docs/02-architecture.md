@@ -18,6 +18,7 @@
 │    operators.py     кнопки и выполнение AI-кода               │
 │    state.py         состояние чата + мост к воркеру           │
 │    snapshot.py      описание сцены для промпта                │
+│    materials.py     PBR-материал из папки с текстурами        │
 │    prompts.py       системные промпты RU/EN                   │
 │    i18n.py          строки интерфейса RU/EN + T()             │
 │                          │                                    │
@@ -55,7 +56,8 @@
 | `preferences.py` | настройки, `config_dict()` для воркера | UI, воркер |
 | `i18n.py` | строки RU/EN, `T()` | всё остальное |
 | `prompts.py` | системный промпт RU/EN | — |
-| `snapshot.py` | текст-описание сцены | как он используется |
+| `snapshot.py` | текст-описание сцены (глава 7) | как он используется |
+| `materials.py` | сборка PBR-материала из папки с текстурами (глава 10) | UI, воркер |
 | `state.py` | история, запуск воркера, чтение JSONL, таймер | UI-компоновку |
 | `ui.py` | отрисовка чата, панели, модель сообщения | сеть |
 | `operators.py` | кнопки, `exec` AI-кода | HTTP |
@@ -108,7 +110,7 @@ asset_core.worker ─> asset_core.transport
 1. Кнопка "Send"  →  bpy.ops.gaa.send()
 2. GAA_OT_send.execute(context):
      - берёт текст из context.window_manager.gaa_input
-     - собирает системный промпт (prompts.system_prompt + snapshot.build_snapshot)
+     - собирает системный промпт (prompts.system_prompt + snapshot.build_snapshot, глава 7)
      - собирает config из prefs (preferences.config_dict)
      - вызывает ChatState.send(...)
 3. ChatState.send:
@@ -251,7 +253,7 @@ Blender (тогда `unregister` не вызовется вовсе) — поэ�
 | Новая настройка | `preferences.py` (+ ключ строки в `i18n.py`) |
 | Новая кнопка/оператор | `operators.py` (+ строка `op.*` в `i18n.py`) |
 | Изменить внешний вид чата | `ui.py` |
-| Другая информация о сцене в промпте | `snapshot.py` |
+| Другая информация о сцене в промпте | `snapshot.py` (глава 7) |
 | Строки/язык | `i18n.py` |
 | Поведение запроса/истории | `state.py` |
 | Другой бэкенд (провайдер) | `asset_core/transport.py` + `preferences.config_dict` |

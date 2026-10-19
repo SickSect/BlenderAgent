@@ -1,1 +1,25 @@
-Nothing needs to be added to .gitignore since only a Python source file (`gui_simple.py`) was added, which is a regular source code file that should be tracked in version control. No build artifacts, dependencies, or temporary files were detected in the changes.
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Build artifacts / generated output
+dist/
+build/
+out/
+
+# Logs
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

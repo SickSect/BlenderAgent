@@ -7,8 +7,9 @@ import traceback
 from contextlib import redirect_stdout
 
 import bpy
+from bpy.props import StringProperty
 
-from . import i18n, preferences, prompts, snapshot, state, ui
+from . import i18n, materials, preferences, prompts, snapshot, state, ui
 
 _POPUP_WIDTH = 480
 _CODE_TEXT_NAME = "AI Assistant Code"
@@ -304,6 +305,220 @@ class GAA_OT_code_to_text(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _find_screen(context):
+    """The ``Screen`` behind the current window, or ``None`` in background mode."""
+    screen = getattr(context, "screen", None)
+    if screen is None:
+        screen = getattr(getattr(context, "window", None), "screen", None)
+    return screen
+
+
+def _find_area(context, target_type: str):
+    """Return an ``Area`` able to host an editor of ``target_type``.
+
+    Blender's UI is a tree: ``Screen`` → ``Area`` → ``Region`` → ``Space``.
+    An editor is a ``Space`` inside an ``Area``, and ``Area.type`` selects
+    which one (``"NODE_EDITOR"``, ``"IMAGE_EDITOR"``, ``"VIEW_3D"``, ...).
+
+    To *show* the Shader/Image editor we therefore either reuse an area that
+    already hosts it, or repurpose another area by flipping its ``type``. We
+    never repurpose the area the button was clicked from — switching it would
+    replace the very sidebar the chat is drawn in.
+    """
+    screen = _find_screen(context)
+    if screen is None:
+        return None
+    for area in screen.areas:
+        if area.type == target_type:
+            return area
+    origin = getattr(context, "area", None)
+    # NOTE: bpy structs hand out a fresh Python wrapper on every access, so
+    # ``area is not origin`` would always be True. ``!=`` compares the actual
+    # Blender pointers, which is what we mean here.
+    candidates = [area for area in screen.areas if area != origin]
+    if not candidates:
+        candidates = list(screen.areas)
+    if not candidates:
+        return None
+    area = max(candidates, key=lambda a: a.width * a.height)
+    area.type = target_type
+    return area
+
+
+def _active_object_material(context):
+    """The material in the active slot of the active object, if any."""
+    obj = getattr(context, "active_object", None) or getattr(context, "object", None)
+    if obj is None:
+        return None, None
+    return obj, getattr(obj, "active_material", None)
+
+
+def _first_material_image(material):
+    """First image referenced by an Image Texture node of ``material``."""
+    tree = getattr(material, "node_tree", None)
+    if tree is None:
+        return None
+    for node in tree.nodes:
+        if node.type == "TEX_IMAGE" and getattr(node, "image", None) is not None:
+            return node.image
+    return None
+
+
+class GAA_OT_open_shader_editor(bpy.types.Operator):
+    """Открыть Shader Editor для материала активного объекта"""
+
+    bl_idname = "gaa.open_shader_editor"
+    bl_label = "Shader Editor"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        area = _find_area(context, "NODE_EDITOR")
+        if area is None or area.spaces.active is None:
+            self.report({"WARNING"}, i18n.T("msg.editor_no_area"))
+            return {"CANCELLED"}
+
+        _obj, mat = _active_object_material(context)
+        if mat is None:
+            self.report({"INFO"}, i18n.T("msg.no_material"))
+            return {"FINISHED"}
+
+        try:
+            space = area.spaces.active
+            # shader_type OBJECT = "Material" mode; pin=False makes the editor
+            # follow the active object, so it lands on the material we report.
+            space.shader_type = "OBJECT"
+            space.pin = False
+        except Exception as exc:  # noqa: BLE001 — any RNA refusal is non-fatal
+            self.report({"WARNING"}, i18n.T("msg.editor_failed", exc=exc))
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, i18n.T("msg.shader_opened", name=mat.name))
+        return {"FINISHED"}
+
+
+class GAA_OT_open_image_editor(bpy.types.Operator):
+    """Открыть Image Editor для текстуры материала активного объекта"""
+
+    bl_idname = "gaa.open_image_editor"
+    bl_label = "Image Editor"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        area = _find_area(context, "IMAGE_EDITOR")
+        if area is None or area.spaces.active is None:
+            self.report({"WARNING"}, i18n.T("msg.editor_no_area"))
+            return {"CANCELLED"}
+
+        _obj, mat = _active_object_material(context)
+        image = _first_material_image(mat) if mat is not None else None
+        if image is None:
+            # No texture on the active material: show *something* useful rather
+            # than refuse — a rendered result, or the first image in the file.
+            image = bpy.data.images.get("Render Result")
+        if image is None and len(bpy.data.images):
+            image = bpy.data.images[0]
+        if image is None:
+            self.report({"INFO"}, i18n.T("msg.no_image"))
+            return {"FINISHED"}
+
+        try:
+            area.spaces.active.image = image
+        except Exception as exc:  # noqa: BLE001
+            self.report({"WARNING"}, i18n.T("msg.editor_failed", exc=exc))
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, i18n.T("msg.image_opened", name=image.name))
+        return {"FINISHED"}
+
+
+class GAA_OT_use_preset(bpy.types.Operator):
+    """Подставить готовый запрос в поле ввода чата"""
+
+    bl_idname = "gaa.use_preset"
+    bl_label = "Material preset"
+    bl_options = {"REGISTER"}
+
+    # The preset id ("matte", "metal", ...) is carried as an operator property,
+    # set by the button in ui.py. We use a plain StringProperty instead of an
+    # EnumProperty because enum item names are RNA-baked once at registration
+    # and would not follow the UI language (see i18n.py's known limitation).
+    preset: StringProperty(default="matte")
+
+    def execute(self, context):
+        key = "preset.%s.text" % self.preset
+        lang = i18n.get_lang()
+        if key not in i18n.STRINGS[lang] and key not in i18n.STRINGS[i18n.DEFAULT_LANG]:
+            return {"CANCELLED"}
+        context.window_manager.gaa_input = i18n.T(key)
+        return {"FINISHED"}
+
+
+def _assign_material(context, material) -> str:
+    """Put ``material`` on the active object; return the object's name or "".
+
+    Replaces the active slot when the object already has materials (what an
+    artist expects when re-texturing) and appends otherwise. Objects without a
+    material list (empties, lights, ...) are left alone.
+    """
+    obj = getattr(context, "active_object", None) or getattr(context, "object", None)
+    slots = getattr(getattr(obj, "data", None), "materials", None)
+    if slots is None:
+        return ""
+    if len(slots):
+        index = getattr(obj, "active_material_index", 0)
+        if not 0 <= index < len(slots):
+            index = 0
+        slots[index] = material
+    else:
+        slots.append(material)
+    return obj.name
+
+
+class GAA_OT_pbr_from_folder(bpy.types.Operator):
+    """Собрать PBR-материал из текстурных карт в выбранной папке"""
+
+    bl_idname = "gaa.pbr_from_folder"
+    bl_label = "PBR из папки"
+    bl_options = {"REGISTER", "UNDO"}
+
+    # subtype="DIR_PATH" makes Blender's file browser accept a *folder* instead
+    # of a file; the chosen path lands back in this property on execute().
+    filepath: StringProperty(subtype="DIR_PATH")
+
+    def invoke(self, context, event):
+        # Opens the file browser asynchronously: it runs execute() once the user
+        # confirms, so nothing below happens on the first click.
+        return context.window_manager.fileselect_add(self)
+
+    def execute(self, context):
+        if not self.filepath:
+            return {"CANCELLED"}
+        try:
+            # All the real work lives in materials.py (headless-testable): scan
+            # the folder, load images with the right colour space, wire nodes.
+            maps = materials.find_maps(self.filepath)
+            if not maps:
+                self.report({"WARNING"}, i18n.T("msg.pbr_empty"))
+                return {"CANCELLED"}
+            images = materials.load_images(maps)
+            material = materials.build_material(
+                materials.material_name_for(self.filepath), images
+            )
+            assigned = _assign_material(context, material)
+        except Exception as exc:  # a bad folder must not kill the UI thread
+            self.report({"ERROR"}, i18n.T("msg.pbr_failed", exc=exc))
+            return {"CANCELLED"}
+
+        maps_text = ", ".join(
+            i18n.T("pbr.map." + role) for role in materials.ordered_roles(maps)
+        )
+        message = i18n.T("msg.pbr_done", name=material.name, maps=maps_text)
+        if assigned:
+            message += " · " + i18n.T("msg.pbr_assigned", obj=assigned)
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
 _classes = (
     GAA_OT_send,
     GAA_OT_stop,
@@ -312,6 +527,10 @@ _classes = (
     GAA_OT_chat_window,
     GAA_OT_run_code,
     GAA_OT_code_to_text,
+    GAA_OT_open_shader_editor,
+    GAA_OT_open_image_editor,
+    GAA_OT_use_preset,
+    GAA_OT_pbr_from_folder,
 )
 
 # bl_label and the class docstring (Blender's tooltip) are copied into RNA at
@@ -324,6 +543,10 @@ _OPERATOR_KEYS = {
     "gaa.chat_window": "op.chat_window",
     "gaa.run_code": "op.run_code",
     "gaa.code_to_text": "op.code_to_text",
+    "gaa.open_shader_editor": "op.open_shader",
+    "gaa.open_image_editor": "op.open_image",
+    "gaa.use_preset": "op.use_preset",
+    "gaa.pbr_from_folder": "op.pbr_folder",
 }
 
 

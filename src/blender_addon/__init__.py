@@ -19,7 +19,7 @@ because Python threads that outlive a script are not supported by Blender.
 bl_info = {
     "name": "Asset Assistant",
     "author": "Aleksei Zalogin",
-    "version": (0, 4, 1),
+    "version": (0, 4, 4),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar (N) > AI",
     "description": "AI chat assistant for creating assets",

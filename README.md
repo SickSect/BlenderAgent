@@ -113,13 +113,14 @@ the 3D Viewport sidebar (`N` panel) with a chat that knows your current scene.
 
 > 📖 **Textbook (`docs/`).** A from-scratch, teacher-style walkthrough of the
 > code — Blender API basics, the add-on architecture, the chat/worker protocol,
-> running AI code safely, and materials/texturing recipes with runnable examples:
+> running AI code safely, materials/texturing recipes with runnable examples,
+> the scene snapshot, and Blender's window/editor system:
 > [`docs/`](docs/README.md). It is written in Russian.
 
 ### Build & install
 
 ```bash
-python tools/build_addon.py          # -> dist/asset_assistant-0.4.1.zip
+python tools/build_addon.py          # -> dist/asset_assistant-0.4.4.zip
 ```
 
 Blender → *Edit → Preferences → Add-ons → Install from Disk*, pick the zip,
@@ -156,6 +157,37 @@ bilingual because Blender bakes them at registration time.
   to run" box with two buttons: **Run code** runs it in the current scene on
   the main thread (stdout and tracebacks are reported back into the chat),
   **To Text Editor** stores it in an `AI Assistant Code` text datablock.
+
+### Material shortcuts
+
+Two one-click buttons jump straight from the chat to the editor that matters for
+the active object's material:
+
+- **Shader Editor** — shows the material's node tree (`shader_type = OBJECT`,
+  follows the active object).
+- **Image Editor** — shows the material's first texture (or `Render Result`, or
+  the file's first image) if the material has no textures.
+
+Both reuse an already-open editor when there is one, otherwise repurpose the
+largest area that is *not* the one the button was clicked from, so the sidebar
+hosting the chat is never replaced. If the active object has no material, the
+editor still opens and the status bar says so. See
+[`docs/08-windows-and-editors.md`](docs/08-windows-and-editors.md).
+
+Below the input, a **Material presets** block offers ready-made requests and one
+one-click action:
+
+- **Presets** (Matte / Metal / Glass / Emission / PBR) fill the input with a
+  ready-made request — a starting point you can edit before sending. They are
+  localized; PBR asks for albedo as color and the data maps as `Non-Color`. See
+  [`docs/09-presets-and-operator-props.md`](docs/09-presets-and-operator-props.md).
+- **PBR from folder** builds the material itself: pick a texture folder and the
+  add-on guesses each map's role from its file name (`albedo`/`base`, `normal`,
+  `roughness`, `metallic`, packed `ORM`, `emission`, `height`), loads the images
+  with the right colour space (colour maps as `sRGB`, data maps as `Non-Color`),
+  wires a Principled BSDF node tree and assigns it to the active object. No model
+  call involved. See
+  [`docs/10-pbr-from-folder.md`](docs/10-pbr-from-folder.md).
 
 ### Running AI code safely
 
@@ -240,16 +272,19 @@ Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
   Blender's API docs state that Python threads living past a script cause
   hard-to-diagnose crashes, so the add-on never blocks and never spawns threads —
   a `bpy.app.timers` callback polls two append-only JSONL files.
-- A compact **scene snapshot** (objects, transforms, polygons, UV, materials,
-  modifiers, selection) is injected into every request, so the model answers
-  about *your* scene. Toggleable in preferences.
+- A compact **scene snapshot** (objects, transforms, polygons, UV, modifiers,
+  selection, plus per-material node/shader/texture details and the image list)
+  is injected into every request, so the model answers about *your* scene.
+  Toggleable in preferences.
 - `asset_core/` is Blender-independent (stdlib only) and is vendored into the
   extension zip by `tools/build_addon.py`.
 
 ### Roadmap for the add-on
 
-- Materials & texturing through the assistant (the next feature): build and
-  edit node trees, assign materials, generate/pack textures.
+- Materials & texturing through the assistant (in progress): the scene snapshot
+  now covers materials and images, the chat can open the Shader/Image editor on
+  the active material, and "PBR from folder" builds a textured material in one
+  click. Still to come: node quick actions, generating/packing/backing textures.
 - Tool-calling over the JSONL channel: real `bpy` tools (create/modify objects,
   materials, export) executed on the main thread with confirmation for
   destructive operations, plus teaching the model to use extra add-ons.

@@ -31,6 +31,9 @@ _POPUP_FONT_WIDTH = 7     # approx px per char at 100% UI scale
 _POPUP_PADDING = 90       # px reserved for box borders/paddings
 _MAX_DETAIL_LINES = 60
 _CODE_PREVIEW_LINES = 14
+# Material prompt presets (labels/texts come from i18n: ``preset.<id>`` and
+# ``preset.<id>.text``). Kept here so ``operators.py`` stays UI-agnostic.
+_PRESET_IDS = ("matte", "metal", "glass", "emission", "pbr")
 
 
 class GAAChatMessage(bpy.types.PropertyGroup):
@@ -168,9 +171,26 @@ def draw_chat(
     row.operator("gaa.send", icon="PLAY")
     row.operator("gaa.stop", text="", icon="PAUSE")
 
+    # -- material prompt presets -----------------------------------------
+    box = layout.box()
+    box.label(text=i18n.T("presets.title"), icon="PRESET")
+    grid = box.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+    for preset_id in _PRESET_IDS:
+        props = grid.operator("gaa.use_preset", text=i18n.T("preset." + preset_id))
+        props.preset = preset_id
+    # Build a material straight from a folder of texture maps — the preset
+    # above only *asks* the assistant to do it; this button does it itself.
+    box.operator("gaa.pbr_from_folder", icon="FILE_FOLDER")
+
     row = layout.row(align=True)
     row.operator("gaa.clear", icon="TRASH")
     row.operator("gaa.settings", icon="PREFERENCES")
+
+    # Materials shortcut: jump straight to the nodes/texture of the active
+    # object's material (see operators.py — screen area / space juggling).
+    row = layout.row(align=True)
+    row.operator("gaa.open_shader_editor", icon="NODETREE")
+    row.operator("gaa.open_image_editor", icon="IMAGE_DATA")
 
     if show_window_button:
         layout.operator("gaa.chat_window", icon="WINDOW")
