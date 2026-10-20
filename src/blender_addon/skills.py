@@ -263,6 +263,91 @@ def parse_skill_requests(text: str) -> List[str]:
     return names
 
 
+# --- keyword matching -------------------------------------------------------
+
+# Words that show up in almost any material question. They count, but only as
+# a tie-breaker: alone they must never pull a skill in, otherwise every
+# request about "a texture" would drag in the colour-space recipe.
+_WEAK_KEYWORDS = frozenset(
+    {
+        "map", "maps", "texture", "textures", "data", "material", "color",
+        "colour", "normal", "ao", "metal", "roughness", "albedo", "image",
+        "bsdf", "socket", "карта", "текстура", "текстуры", "материал",
+    }
+)
+
+# Minimum evidence before a skill is attached without asking the model. The
+# score is the sum of the lengths of the matched (non-weak) keywords, so
+# "стекло" (6) qualifies and "ao" (2) does not.
+MIN_AUTO_SCORE = 5
+
+# How many skills may be attached to a prompt automatically. Kept at one: an
+# automatic load is invisible to the model, and two bodies cost twice the
+# context for a guess.
+MAX_AUTO_SKILLS = 1
+
+_KEYWORD_PATTERNS: Dict[str, "re.Pattern[str]"] = {}
+
+
+def _keyword_re(keyword: str):
+    """Word-boundary pattern for *keyword* (cached).
+
+    The boundaries matter: "ao" must not match inside "board", and "map"
+    must not match inside "mapping".
+    """
+    pattern = _KEYWORD_PATTERNS.get(keyword)
+    if pattern is None:
+        pattern = re.compile(
+            r"(?<!\w)" + re.escape(keyword) + r"(?!\w)", re.IGNORECASE
+        )
+        _KEYWORD_PATTERNS[keyword] = pattern
+    return pattern
+
+
+def score_keywords(skills: Sequence[Skill], text: str) -> List[Tuple[int, Skill]]:
+    """``(score, skill)`` pairs for the skills whose keywords appear in *text*.
+
+    Sorted strongest first; ties broken by name so the result is stable.
+    """
+    if not text:
+        return []
+    scored: List[Tuple[int, Skill]] = []
+    for skill in skills:
+        score = 0
+        for keyword in skill.keywords:
+            if len(keyword) < 2:
+                continue
+            if not _keyword_re(keyword).search(text):
+                continue
+            score += 1 if keyword.lower() in _WEAK_KEYWORDS else len(keyword)
+        if score:
+            scored.append((score, skill))
+    scored.sort(key=lambda pair: (-pair[0], pair[1].name))
+    return scored
+
+
+def match(
+    skills: Sequence[Skill],
+    text: str,
+    limit: int = MAX_AUTO_SKILLS,
+    min_score: int = MIN_AUTO_SCORE,
+) -> List[Skill]:
+    """Skills to attach to the prompt *without* a second round trip.
+
+    The model may always ask for a skill explicitly (that path is unchanged);
+    this is the shortcut for the common case where the user's own words
+    already say which recipe they need.
+    """
+    picked: List[Skill] = []
+    for score, skill in score_keywords(skills, text):
+        if score < min_score:
+            break
+        picked.append(skill)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
 def strip_skill_requests(text: str) -> str:
     """*text* without request blocks — keeps them out of history and code."""
     if not text:

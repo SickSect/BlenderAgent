@@ -9,7 +9,9 @@ Three steps, each usable on its own (and testable without a file browser):
 3. :func:`build_material` — wire them into a Principled BSDF node tree.
 
 The UI operator (``operators.GAA_OT_pbr_from_folder``) only picks the folder and
-calls these functions, so the interesting logic stays headless-friendly.
+calls these functions, so the interesting logic stays headless-friendly. The
+same logic backs the ``material.build_from_folder`` tool, so the button and the
+model-callable action are literally the same code.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ import os
 import re
 
 import bpy
+
+from . import api, tools
 
 # Role -> tokens that identify it in a file name. Matching is token based: the
 # name is split on non-alphanumerics ("T_Wood_BaseColor_2k" -> t, wood,
@@ -62,6 +66,11 @@ IMAGE_EXTENSIONS = (
 
 # Canonical report order (base first: it is the map people care about most).
 MAP_ORDER = ("base", "normal", "rough", "metal", "orm", "emit", "height")
+
+# Custom property on a material: the folder it was built from. It makes the
+# "PBR from folder" action repeatable — the second run updates the existing
+# material instead of creating "Wood_2k.001".
+SOURCE_FOLDER_KEY = "gaa_source_folder"
 
 _TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
 
@@ -137,15 +146,7 @@ def _link(links, source, out_name, target, in_name, *aliases) -> bool:
     vs the older "Emission"). Returns ``False`` when a socket is missing instead
     of raising, so a partial texture set still produces a material.
     """
-    out = source.outputs.get(out_name)
-    if out is None:
-        return False
-    for name in (in_name,) + aliases:
-        inp = target.inputs.get(name)
-        if inp is not None:
-            links.new(out, inp)
-            return True
-    return False
+    return api.link(links, source, out_name, target, in_name, *aliases)
 
 
 def _new_node(nodes, node_type: str, location):
@@ -209,3 +210,102 @@ def _connect(nodes, links, bsdf, output, role, texture, helper_location) -> None
         node = _new_node(nodes, "ShaderNodeDisplacement", helper_location)
         _link(links, texture, "Color", node, "Height")
         _link(links, node, "Displacement", output, "Displacement")
+
+
+def assign_material(obj, material) -> str:
+    """Put ``material`` on ``obj``; return the object's name or ``""``.
+
+    Replaces the active slot when the object already has materials (what an
+    artist expects when re-texturing) and appends otherwise. Objects without a
+    material list (empties, lights, ...) are left alone.
+    """
+    slots = getattr(getattr(obj, "data", None), "materials", None)
+    if slots is None:
+        return ""
+    if len(slots):
+        index = getattr(obj, "active_material_index", 0)
+        if not 0 <= index < len(slots):
+            index = 0
+        slots[index] = material
+    else:
+        slots.append(material)
+    return obj.name
+
+
+def build_pbr_from_folder(directory: str, assign_to=None):
+    """Build a PBR material from the texture maps in ``directory``.
+
+    Returns ``(material, maps, assigned_name, reused)``. ``assigned_name`` is
+    empty when no object was given or when the object cannot hold a material;
+    ``reused`` says whether an existing material was updated instead of a new
+    one being created.
+
+    Calling it twice with the same folder must not leave two "Wood_2k"
+    materials behind, so the material remembers which folder it came from
+    (a custom property) and is reused when the folder matches.
+
+    This is the whole "PBR from folder" feature as one headless-friendly
+    function: the button and the model-callable tool both call it.
+    """
+    maps = find_maps(directory)
+    if not maps:
+        raise ValueError(f"no texture maps found in {directory}")
+    images = load_images(maps)
+    name = material_name_for(directory)
+
+    material = bpy.data.materials.get(name)
+    reused = material is not None and material.get(SOURCE_FOLDER_KEY) == directory
+    if reused:
+        # The same folder was already built here: refresh the textures
+        # instead of piling up "Wood_2k.001" duplicates.
+        for image in images.values():
+            try:
+                image.reload()
+            except Exception:  # noqa: BLE001 - a locked file is not fatal
+                pass
+    else:
+        material = build_material(name, images)
+        material[SOURCE_FOLDER_KEY] = directory
+
+    assigned = assign_material(assign_to, material) if assign_to is not None else ""
+    return material, maps, assigned, reused
+
+
+# --- the tool --------------------------------------------------------------
+#
+# Registering the action here means the button and the model call the very
+# same code - there is no second implementation to keep in sync.
+
+
+@tools.tool(
+    "material.build_from_folder",
+    "PBR from folder",
+    "Build a PBR material from a folder of texture maps (albedo, normal, "
+    "roughness, metallic, ORM, emission, height) and assign it to the active "
+    "object. Call this instead of writing bpy code.",
+    params=("folder",),
+)
+def build_from_folder_tool(folder=None, **kwargs) -> str:
+    """Tool entry point: build a PBR material from a texture folder."""
+    if not folder:
+        return (
+            "No folder was given. Ask the user for the path to the texture "
+            "folder, or tell them to press the 'PBR from folder' button."
+        )
+    obj = getattr(bpy.context, "active_object", None) or getattr(
+        bpy.context, "object", None
+    )
+    material, maps, assigned, reused = build_pbr_from_folder(
+        folder, assign_to=obj
+    )
+    roles = ", ".join(ordered_roles(maps))
+    if reused:
+        report = f"Updated existing material '{material.name}' from {folder}"
+    else:
+        report = f"Built material '{material.name}' from {folder}"
+    report += f" (maps: {roles})."
+    if assigned:
+        report += f" Assigned to '{assigned}'."
+    else:
+        report += " No active object to assign it to."
+    return report

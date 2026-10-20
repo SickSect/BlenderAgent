@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.11 (TransferBot)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.11 (CaloriesCalc)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.13 (CLI-code-agent)" project-jdk-type="Python SDK" />
 </project>

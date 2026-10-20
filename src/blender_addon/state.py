@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 
 import bpy
 
-from . import i18n, skills
+from . import i18n, skills, tools
 
 ADDON_DIR = Path(__file__).resolve().parent
 EVENT_POLL_INTERVAL = 0.1     # seconds between timer ticks
@@ -206,6 +206,15 @@ class ChatState:
         self.last_config: Optional[dict] = None
         self.last_max_chars: int = DEFAULT_CONTEXT_CHARS
         self.skill_texts: List[tuple] = []  # (name, body) loaded for this turn
+        self.auto_skills: List[str] = []    # attached without a round trip
+        self._fetched_skills = 0             # on-demand loads this turn
+        self.tool_results: List[dict] = []   # reports of executed tools
+        self.tool_history: List[dict] = []   # every call, including refusals
+        self._ran_tools: List[dict] = []     # (key, report) of executed calls
+        self._tool_calls = 0                 # tool calls this turn
+        # A destructive tool waiting for the user's click. While it is set the
+        # turn stays open: the model asked, the addon waits.
+        self.pending_confirmation: Optional[dict] = None
 
         self.proc: Optional[subprocess.Popen] = None
         self.tmpdir: Optional[Path] = None
@@ -293,6 +302,22 @@ class ChatState:
 
     # -- sending ----------------------------------------------------------
 
+    def _auto_skills(self, user_text: str) -> List[skills.Skill]:
+        """Skills the user's own words already point at.
+
+        The model can always ask for a skill explicitly; this is the shortcut
+        for "сделай стеклянный материал", where the recipe for glass is
+        obviously needed and a round trip would only waste time.
+        """
+        try:
+            library = skill_library()
+            if not library:
+                return []
+            return skills.match(library, user_text)
+        except Exception as exc:  # noqa: BLE001 - a bad keyword must not block the chat
+            print(f"[AssetAssistant] skill matching unavailable: {exc}")
+            return []
+
     def send(
         self,
         config: dict,
@@ -318,19 +343,50 @@ class ChatState:
         self.last_config = config
         self.last_max_chars = max_chars
         self.skill_texts = []
+        self.auto_skills = []
+        self._fetched_skills = 0
+        self.tool_results = []
+        self.tool_history = []
+        self._ran_tools = []
+        self._tool_calls = 0
+        self.pending_confirmation = None
 
-        messages = build_messages(self.history, system_prompt, max_chars)
+        # Attach the recipes the user's words already point at, so the model
+        # starts with the right instructions instead of asking for them.
+        for skill in self._auto_skills(user_text):
+            self.skill_texts.append((skill.name, skill.body))
+            self.auto_skills.append(skill.name)
+        if self.auto_skills:
+            set_last_display(
+                i18n.T("msg.skill_loading", name=", ".join(self.auto_skills))
+            )
+
+        messages = build_messages(
+            self.history, self._prompt_with_context(), max_chars
+        )
         self._write_command({"type": "chat", "config": config, "messages": messages})
         ensure_timer()
         return True
 
-    def _prompt_with_skills(self) -> str:
-        """System prompt plus every instruction pulled in for this turn."""
-        if not self.skill_texts:
-            return self.system_prompt
+    def _prompt_with_context(self) -> str:
+        """System prompt plus everything gathered for this turn.
+
+        Three kinds of context are appended: the instruction packs (skills)
+        and the reports of the tools that ran. All of it goes into the
+        **system** message, never into the conversation history — the chat
+        template has no notion of a "tool result message", and different
+        models read the same conversation differently.
+        """
         parts = [self.system_prompt]
         for name, body in self.skill_texts:
             parts.append(f"# skill: {name}\n\n{body}")
+        for call in self.tool_results:
+            parts.append(
+                f"# tool result: {call['id']}\n"
+                "This tool has ALREADY RUN. Its output is below. "
+                "Do not call it again - use this result to answer the user.\n\n"
+                f"{call['report']}"
+            )
         return "\n\n".join(parts)
 
     def _requested_skill(self) -> Optional[str]:
@@ -354,9 +410,10 @@ class ChatState:
 
         Returns True while a new round trip is running, so the caller keeps the
         session busy. Every fetch costs one extra request — the budget in
-        :data:`skills.MAX_SKILL_LOADS` keeps that in check.
+        :data:`skills.MAX_SKILL_LOADS` keeps that in check. Skills that were
+        attached automatically do not eat this budget: they cost no round trip.
         """
-        if len(self.skill_texts) >= skills.MAX_SKILL_LOADS:
+        if self._fetched_skills >= skills.MAX_SKILL_LOADS:
             return False
         if self.last_config is None or self.commands_path is None:
             return False
@@ -365,6 +422,7 @@ class ChatState:
             return False
 
         self.skill_texts.append((skill.name, skill.body))
+        self._fetched_skills += 1
         set_last_display(i18n.T("msg.skill_loading", name=skill.name))
         self.stream_buf = ""
         self._write_command(
@@ -372,12 +430,154 @@ class ChatState:
                 "type": "chat",
                 "config": self.last_config,
                 "messages": build_messages(
-                    self.history, self._prompt_with_skills(), self.last_max_chars
+                    self.history, self._prompt_with_context(), self.last_max_chars
                 ),
             }
         )
         ensure_timer()
         return True
+
+    def _requested_tool(self):
+        """First tool the reply asked for that exists in the registry.
+
+        Returns ``(tool_id, params)`` or ``None``. Unknown names are ignored:
+        a hallucinated tool must not break the turn.
+        """
+        for name, params in tools.parse_request(self.stream_buf):
+            if tools.get(name) is not None:
+                return name, params
+        return None
+
+    def _run_tool(self, name: str, params: dict) -> bool:
+        """Run a tool on the main thread and ask the model again.
+
+        Returns True when the turn is handled: either a new round trip is
+        running, or the turn was closed because the model asked for a tool
+        that had already run. The report goes into the system prompt, so the
+        model reads *what actually happened* instead of guessing.
+        """
+        if self.last_config is None or self.commands_path is None:
+            return False
+        item = tools.get(name)
+        if item is None:
+            return False
+
+        # A model that does not notice the result may ask for the same tool
+        # again. Running it twice would duplicate whatever it created, so the
+        # second request is not executed: the turn ends with what the model
+        # managed to say plus the report of the first run.
+        previous = self._tool_report(name, params)
+        if previous is not None:
+            said = tools.strip_requests(self.stream_buf).strip()
+            if said:
+                self.stream_buf = f"{said}\n\n{previous}".strip()
+            else:
+                # The model repeated the call without saying anything useful:
+                # show the report itself rather than an empty bubble.
+                self.stream_buf = i18n.T("msg.tool_done", report=previous)
+            self._finish_reply()
+            return True
+
+        if self._tool_calls >= tools.MAX_TOOL_CALLS:
+            self.stream_buf = (
+                f"Tool budget for this turn is used up ({tools.MAX_TOOL_CALLS}). "
+                f"Last result:\n{self.tool_results[-1]['report'] if self.tool_results else '-'}"
+            )
+            self._finish_reply()
+            return True
+
+        self._tool_calls += 1
+        if item.destructive:
+            # A destructive tool waits for the user. The turn stays open: the
+            # model asked, the addon shows a confirmation and waits for the
+            # click. Nothing is executed until then.
+            self.pending_confirmation = {
+                "id": name,
+                "params": dict(params),
+                "title": item.title,
+                "description": item.description,
+                # What is about to be destroyed, named out loud.
+                "preview": tools.preview_of(name, params),
+            }
+            set_last_display(i18n.T("msg.tool_confirm", name=item.title))
+            return True
+        result = tools.execute(name, params)
+        self.tool_results.append({"id": result.id, "report": result.report})
+        self._record_tool(name, params, result.report, result.ok)
+        self._ran_tools.append(
+            {
+                "key": (name, tuple(sorted((params or {}).items()))),
+                "report": result.report,
+            }
+        )
+
+        set_last_display(i18n.T("msg.tool_running", name=name))
+        self._ask_again()
+        return True
+
+    def _tool_report(self, name: str, params: dict):
+        """The report of an earlier run of this exact call, or ``None``."""
+        key = (name, tuple(sorted((params or {}).items())))
+        for call in self._ran_tools:
+            if call["key"] == key:
+                return call["report"]
+        return None
+
+    def _ask_again(self) -> None:
+        """Re-send the turn with everything gathered so far attached."""
+        self.stream_buf = ""
+        self._write_command(
+            {
+                "type": "chat",
+                "config": self.last_config,
+                "messages": build_messages(
+                    self.history, self._prompt_with_context(), self.last_max_chars
+                ),
+            }
+        )
+        ensure_timer()
+
+    def _record_tool(self, name: str, params: dict, report: str, ok: bool) -> None:
+        """Remember that a tool ran - the history is shown to the user."""
+        self.tool_history.append(
+            {"id": name, "params": dict(params or {}), "report": report, "ok": bool(ok)}
+        )
+
+    def run_pending_tool(self) -> Optional[dict]:
+        """Execute the tool the user just confirmed.
+
+        Returns the report, or ``None`` when nothing was pending.
+        """
+        pending = self.pending_confirmation
+        if pending is None:
+            return None
+        self.pending_confirmation = None
+        result = tools.execute(pending["id"], pending.get("params"))
+        self.tool_results.append({"id": result.id, "report": result.report})
+        self._record_tool(
+            pending["id"], pending.get("params", {}), result.report, result.ok
+        )
+        self._ran_tools.append(
+            {
+                "key": (
+                    pending["id"],
+                    tuple(sorted((pending.get("params") or {}).items())),
+                ),
+                "report": result.report,
+            }
+        )
+        return {"id": result.id, "report": result.report, "ok": result.ok}
+
+    def decline_pending_tool(self) -> Optional[dict]:
+        """The user said no: tell the model and let it continue."""
+        pending = self.pending_confirmation
+        if pending is None:
+            return None
+        self.pending_confirmation = None
+        report = i18n.T("msg.tool_declined", name=pending["title"])
+        self.tool_results.append({"id": pending["id"], "report": report})
+        self._record_tool(pending["id"], pending.get("params", {}), report, False)
+        return {"id": pending["id"], "report": report, "ok": False}
 
     def _write_command(self, command: dict) -> None:
         assert self.commands_path is not None
@@ -443,6 +643,11 @@ class ChatState:
             self.stream_buf += event.get("text", "")
             set_last_display(self.stream_buf)
         elif kind == "done":
+            # A reply that asks for a tool is not an answer: run the tool and
+            # re-send the same turn with the report attached.
+            call = self._requested_tool()
+            if call is not None and self._run_tool(*call):
+                return
             # A reply that only asks for an instruction pack is not an answer:
             # pull the text in and re-send the same turn (bounded).
             name = self._requested_skill()
@@ -454,7 +659,7 @@ class ChatState:
 
     def _finish_reply(self) -> None:
         """Close the turn: drop request blocks, keep code, release busy."""
-        text = skills.strip_skill_requests(self.stream_buf)
+        text = tools.strip_requests(skills.strip_skill_requests(self.stream_buf))
         if text.strip():
             self.history.append({"role": "assistant", "content": text})
             self.pending_code = extract_last_code(text)
@@ -466,6 +671,10 @@ class ChatState:
         self.busy = False
         self.stream_buf = ""
         self.skill_texts = []
+        self.auto_skills = []
+        self._fetched_skills = 0
+        # The tool reports stay: they are the record of what the turn did, and
+        # they are reset by send() at the start of the next turn.
 
     def _fail(self, message: str) -> None:
         self.last_error = message
@@ -490,6 +699,12 @@ class ChatState:
         self.system_prompt = ""
         self.last_config = None
         self.skill_texts = []
+        self.auto_skills = []
+        self._fetched_skills = 0
+        self.tool_results = []
+        self._ran_tools = []
+        self._tool_calls = 0
+        self.pending_confirmation = None
 
 
 _state = ChatState()
@@ -497,6 +712,45 @@ _state = ChatState()
 
 def get_state() -> ChatState:
     return _state
+
+
+# --- the tools that talk about the tools -------------------------------------
+#
+# They live here rather than in tools.py because they need the chat state,
+# and tools.py cannot import itself.
+
+
+@tools.tool(
+    "tools.history",
+    "Tool history",
+    "List the tools that ran during this conversation, with their reports. Use "
+    "it when the user asks what has been done to the scene.",
+)
+def history_tool(**kwargs) -> str:
+    """Tool entry point: the call history of this conversation."""
+    history = list(getattr(get_state(), "tool_history", []))
+    if not history:
+        return "No tool has run in this conversation yet."
+    lines = [f"{len(history)} tool call(s) so far:"]
+    for entry in history:
+        mark = "ok" if entry.get("ok") else "not done"
+        lines.append(f"- {entry['id']} ({mark}): {entry['report']}")
+    return "\n".join(lines)
+
+
+@tools.tool(
+    "tools.list",
+    "List the tools",
+    "List the tools the add-on can perform: materials, textures, UV, baking "
+    "and the procedural material recipes.",
+)
+def list_tools_tool(**kwargs) -> str:
+    """Tool entry point: the tool catalogue."""
+    lines = ["Tools:"]
+    for item in tools.all_tools():
+        mark = " (destructive)" if item.destructive else ""
+        lines.append(f"- {item.id}: {item.description}{mark}")
+    return "\n".join(lines)
 
 
 # -- timer plumbing ---------------------------------------------------------

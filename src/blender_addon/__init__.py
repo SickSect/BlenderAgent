@@ -28,7 +28,7 @@ bl_info = {
 
 import bpy
 
-from . import operators, preferences, state, ui
+from . import api, nodemenu, operators, preferences, state, ui, uv
 
 _keymaps = []
 
@@ -66,7 +66,13 @@ def _unregister_keymap():
 def register():
     preferences.register()
     ui.register()
+    uv.register()
+    nodemenu.register()
     operators.register()
+    # Publish the version-tolerant helpers where generated code can reach
+    # them: bpy.app.driver_namespace is the standard place for a plugin to
+    # share data with the files it produces.
+    api.install(bpy.app.driver_namespace)
     _register_keymap()
     if _on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_on_load_post)
@@ -79,5 +85,8 @@ def unregister():
     state.remove_timer()
     state.get_state().kill_worker()
     operators.unregister()
+    nodemenu.unregister()
+    uv.unregister()
     ui.unregister()
     preferences.unregister()
+    bpy.app.driver_namespace.pop("gaa_api", None)

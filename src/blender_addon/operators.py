@@ -1,4 +1,4 @@
-"""Operators: send / stop / clear / open settings / chat window / run code."""
+﻿"""Operators: send / stop / clear / open settings / chat window / run code."""
 
 from __future__ import annotations
 
@@ -9,7 +9,29 @@ from contextlib import redirect_stdout
 import bpy
 from bpy.props import StringProperty
 
-from . import i18n, materials, preferences, prompts, skills, snapshot, state, ui
+from . import (
+    baking,
+    doctor,
+    exchange,
+    export,
+    findings,
+    heightmap,
+    i18n,
+    materials,
+    nodemenu,
+    objects,
+    preferences,
+    procedural,
+    project,
+    prompts,
+    skills,
+    snapshot,
+    state,
+    textures,
+    tools,
+    ui,
+    uv,
+)
 
 _POPUP_WIDTH = 480
 _CODE_TEXT_NAME = "AI Assistant Code"
@@ -19,6 +41,13 @@ def _system_prompt(context) -> str:
     prefs = preferences.get_prefs(context)
     lang = prefs.language.lower() if prefs is not None else i18n.DEFAULT_LANG
     text = prompts.system_prompt(lang)
+
+    # The tool catalog comes first: a small local model follows the protocol
+    # better when the rule and the list are close to the base rules than when
+    # they are buried behind the skills and the scene snapshot.
+    tool_catalog = tools.catalog()
+    if tool_catalog:
+        text += "\n\n" + i18n.T("prompt.tools_header") + "\n" + tool_catalog
 
     # The catalog is always present; a body is only pulled in when the model
     # asks for it (state.py handles that round trip).
@@ -30,7 +59,8 @@ def _system_prompt(context) -> str:
     if include:
         try:
             text += (
-                "\n\n" + i18n.T("prompt.snapshot_header") + "\n" + snapshot.build_snapshot()
+                "\n\n" + i18n.T("prompt.snapshot_header") + "\n"
+                + snapshot.build_snapshot(context)
             )
         except Exception as exc:  # a broken snapshot must not block the chat
             text += f"\n\n(Snapshot unavailable: {exc})"
@@ -463,22 +493,13 @@ class GAA_OT_use_preset(bpy.types.Operator):
 def _assign_material(context, material) -> str:
     """Put ``material`` on the active object; return the object's name or "".
 
-    Replaces the active slot when the object already has materials (what an
-    artist expects when re-texturing) and appends otherwise. Objects without a
-    material list (empties, lights, ...) are left alone.
+    Thin wrapper over :func:`materials.assign_material` so that the operator
+    and the tool share one implementation.
     """
     obj = getattr(context, "active_object", None) or getattr(context, "object", None)
-    slots = getattr(getattr(obj, "data", None), "materials", None)
-    if slots is None:
+    if obj is None:
         return ""
-    if len(slots):
-        index = getattr(obj, "active_material_index", 0)
-        if not 0 <= index < len(slots):
-            index = 0
-        slots[index] = material
-    else:
-        slots.append(material)
-    return obj.name
+    return materials.assign_material(obj, material)
 
 
 class GAA_OT_pbr_from_folder(bpy.types.Operator):
@@ -503,15 +524,12 @@ class GAA_OT_pbr_from_folder(bpy.types.Operator):
         try:
             # All the real work lives in materials.py (headless-testable): scan
             # the folder, load images with the right colour space, wire nodes.
-            maps = materials.find_maps(self.filepath)
-            if not maps:
-                self.report({"WARNING"}, i18n.T("msg.pbr_empty"))
-                return {"CANCELLED"}
-            images = materials.load_images(maps)
-            material = materials.build_material(
-                materials.material_name_for(self.filepath), images
+            obj = getattr(context, "active_object", None) or getattr(
+                context, "object", None
             )
-            assigned = _assign_material(context, material)
+            material, maps, assigned, _reused = materials.build_pbr_from_folder(
+                self.filepath, assign_to=obj
+            )
         except Exception as exc:  # a bad folder must not kill the UI thread
             self.report({"ERROR"}, i18n.T("msg.pbr_failed", exc=exc))
             return {"CANCELLED"}
@@ -523,6 +541,879 @@ class GAA_OT_pbr_from_folder(bpy.types.Operator):
         if assigned:
             message += " · " + i18n.T("msg.pbr_assigned", obj=assigned)
         self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
+def _doctor_report(findings) -> str:
+    """The findings as a chat message: a title, the counts and the list."""
+    counts = doctor.summary(findings)
+    lines = [i18n.T("doctor.title")]
+    lines.append(
+        i18n.T(
+            "doctor.counts",
+            errors=counts[doctor.ERROR],
+            warnings=counts[doctor.WARNING],
+            notes=counts[doctor.INFO],
+        )
+    )
+    lines.append("")
+    lines.append(doctor.format_findings(findings))
+    return "\n".join(lines)
+
+
+class GAA_OT_material_doctor(bpy.types.Operator):
+    """Проверить материалы сцены и найти в них ошибки"""
+
+    bl_idname = "gaa.material_doctor"
+    bl_label = "Доктор материалов"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        try:
+            findings = doctor.audit_scene()
+        except Exception as exc:  # noqa: BLE001 - a check must not kill the UI
+            self.report({"ERROR"}, i18n.T("doctor.failed", exc=exc))
+            return {"CANCELLED"}
+
+        # The report goes into the chat panel: it is longer than a status
+        # line, and the user wants to read it next to the conversation.
+        state.add_display("result", _doctor_report(findings))
+        counts = doctor.summary(findings)
+        self.report(
+            {"INFO"},
+            i18n.T(
+                "doctor.counts",
+                errors=counts[doctor.ERROR],
+                warnings=counts[doctor.WARNING],
+                notes=counts[doctor.INFO],
+            ),
+        )
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_material_fix(bpy.types.Operator):
+    """Исправить то, что доктор материалов может починить сам"""
+
+    bl_idname = "gaa.material_fix"
+    bl_label = "Починить"
+    # UNDO: the whole repair is one Ctrl+Z step.
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            findings = doctor.audit_scene()
+            done = []
+            for finding in findings:
+                if finding.fix not in doctor.SAFE_FIXES:
+                    continue
+                mat = bpy.data.materials.get(finding.material)
+                if mat is None:
+                    continue
+                message = doctor.fix(mat, finding)
+                if message:
+                    done.append(message)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("doctor.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not done:
+            state.add_display("result", i18n.T("doctor.nothing_to_fix"))
+            self.report({"INFO"}, i18n.T("doctor.nothing_to_fix"))
+            state._redraw()
+            return {"FINISHED"}
+
+        after = doctor.audit_scene()
+        counts = doctor.summary(after)
+        report = (
+            i18n.T("doctor.fixed", count=len(done))
+            + "\n"
+            + "\n".join(f"- {line}" for line in done)
+            + "\n\n"
+            + i18n.T(
+                "doctor.counts",
+                errors=counts[doctor.ERROR],
+                warnings=counts[doctor.WARNING],
+                notes=counts[doctor.INFO],
+            )
+        )
+        state.add_display("result", report)
+        self.report({"INFO"}, i18n.T("doctor.fixed", count=len(done)))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_pack_textures(bpy.types.Operator):
+    """Упаковать все файловые текстуры внутрь .blend"""
+
+    bl_idname = "gaa.pack_textures"
+    bl_label = "Упаковать текстуры"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            packed = textures.pack_all()
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("textures.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not packed:
+            message = i18n.T("textures.nothing_to_pack")
+        else:
+            message = i18n.T("textures.packed", n=len(packed))
+            state.add_display("result", message + "\n" + "\n".join(f"- {n}" for n in packed))
+        self.report({"INFO"}, message)
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_fix_paths(bpy.types.Operator):
+    """Сделать пути к текстурам относительными и найти потерянные файлы"""
+
+    bl_idname = "gaa.fix_paths"
+    bl_label = "Пути и потерянные"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            relative = textures.make_relative()
+            missing_before = textures.find_missing()
+            relinked = textures.relink()
+            missing_after = textures.find_missing()
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("textures.failed", exc=exc))
+            return {"CANCELLED"}
+
+        lines = []
+        if relative:
+            lines.append(i18n.T("textures.relative", n=len(relative)))
+        if relinked:
+            lines.append(i18n.T("textures.relinked", n=len(relinked)))
+        if missing_before and not relinked:
+            lines.append(i18n.T("textures.missing", n=len(missing_before)))
+            lines += [f"  - {name}" for name in missing_before[:10]]
+        elif missing_after:
+            lines.append(i18n.T("textures.still_missing", n=len(missing_after)))
+            lines += [f"  - {name}" for name in missing_after[:10]]
+        if not lines:
+            lines.append(i18n.T("textures.paths_ok"))
+
+        message = "\n".join(lines)
+        state.add_display("result", message)
+        self.report({"INFO"}, lines[0])
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_texture_report(bpy.types.Operator):
+    """Показать отчёт по текстурам сцены"""
+
+    bl_idname = "gaa.texture_report"
+    bl_label = "Отчёт по текстурам"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        try:
+            message = textures.report()
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("textures.failed", exc=exc))
+            return {"CANCELLED"}
+        state.add_display("result", message)
+        self.report({"INFO"}, i18n.T("textures.count", n=len(textures.file_images())))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_assign_to_selection(bpy.types.Operator):
+    """Назначить материал активного объекта всем выделенным"""
+
+    bl_idname = "gaa.assign_to_selection"
+    bl_label = "Назначить выделению"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        material = getattr(obj, "active_material", None)
+        if material is None:
+            self.report({"WARNING"}, i18n.T("bulk.no_material"))
+            return {"CANCELLED"}
+        try:
+            changed = objects.assign_to_selection(material)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("bulk.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not changed:
+            self.report({"INFO"}, i18n.T("bulk.nothing_selected"))
+            return {"FINISHED"}
+        message = i18n.T("bulk.assigned", name=material.name, n=len(changed))
+        state.add_display("result", message + "\n" + "\n".join(f"- {n}" for n in changed))
+        self.report({"INFO"}, message)
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_find_material_users(bpy.types.Operator):
+    """Показать, кто использует материал активного объекта"""
+
+    bl_idname = "gaa.find_material_users"
+    bl_label = "Кто использует"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        material = getattr(obj, "active_material", None)
+        if material is None:
+            self.report({"WARNING"}, i18n.T("bulk.no_material"))
+            return {"CANCELLED"}
+        try:
+            users = objects.find_users(material)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("bulk.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not users:
+            message = i18n.T("bulk.no_users", name=material.name)
+        else:
+            lines = [i18n.T("bulk.users", name=material.name, n=len(users))]
+            for name, index, faces in users:
+                lines.append(f"- {name}: слот {index}, {faces} граней")
+            message = "\n".join(lines)
+        state.add_display("result", message)
+        self.report({"INFO"}, i18n.T("bulk.users", name=material.name, n=len(users)))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_import_textures(bpy.types.Operator):
+    """Импортировать текстуры из папки и подготовить проект"""
+
+    bl_idname = "gaa.import_textures"
+    bl_label = "Импорт из папки"
+    bl_options = {"REGISTER", "UNDO"}
+
+    # subtype="DIR_PATH" makes Blender's file browser accept a *folder*.
+    filepath: StringProperty(subtype="DIR_PATH")
+
+    def invoke(self, context, event):
+        return context.window_manager.fileselect_add(self)
+
+    def execute(self, context):
+        if not self.filepath:
+            return {"CANCELLED"}
+        try:
+            report_data = project.import_and_prepare(self.filepath)
+        except Exception as exc:  # noqa: BLE001 - a bad folder must not kill the UI
+            self.report({"ERROR"}, i18n.T("project.failed", exc=exc))
+            state.add_display("error", i18n.T("project.failed", exc=exc))
+            return {"CANCELLED"}
+
+        lines = [i18n.T("project.title")] + [
+            f"- {step}" for step in report_data["steps"]
+        ]
+        problems = report_data["problems"]
+        if problems:
+            lines.append(i18n.T("project.problems"))
+            lines += [f"- {problem}" for problem in problems]
+        else:
+            lines.append(i18n.T("project.ready"))
+        message = "\n".join(lines)
+        state.add_display("result", message)
+        self.report({"INFO"}, i18n.T("project.done", name=report_data["material"]))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_check_export(bpy.types.Operator):
+    """Проверить, готов ли проект к передаче"""
+
+    bl_idname = "gaa.check_export"
+    bl_label = "Проверка экспорта"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        try:
+            message = export.report()
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("project.failed", exc=exc))
+            return {"CANCELLED"}
+        state.add_display("result", message)
+        self.report({"INFO"}, i18n.T("project.checked"))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_tool_confirm(bpy.types.Operator):
+    """Выполнить разрушающий инструмент, который запросил ассистент"""
+
+    bl_idname = "gaa.tool_confirm"
+    bl_label = "Выполнить"
+    # UNDO: the tool changes the scene, and it must be one Ctrl+Z step.
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        chat = state.get_state()
+        result = chat.run_pending_tool()
+        if result is None:
+            return {"CANCELLED"}
+        state.add_display("result", result["report"])
+        self.report({"INFO"}, i18n.T("msg.tool_ran"))
+        # The model continues with the result of the confirmed tool.
+        chat._ask_again()
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_tool_cancel(bpy.types.Operator):
+    """Отклонить разрушающий инструмент, который запросил ассистент"""
+
+    bl_idname = "gaa.tool_cancel"
+    bl_label = "Отмена"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        chat = state.get_state()
+        result = chat.decline_pending_tool()
+        if result is None:
+            return {"CANCELLED"}
+        state.add_display("result", result["report"])
+        self.report({"INFO"}, i18n.T("msg.tool_declined_short"))
+        # The model continues and tells the user what was not done.
+        chat._ask_again()
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_check_uv(bpy.types.Operator):
+    """Проверить UV-развёртку: плотность текселей, перекрытия, выход за границы"""
+
+    bl_idname = "gaa.check_uv"
+    bl_label = "Проверить UV"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        try:
+            # The world matrix must be fresh: a scale set a moment ago has to
+            # be counted, otherwise the density comes out wrong.
+            context.view_layer.update()
+            objects = [
+                obj for obj in context.scene.objects if obj.type == "MESH"
+            ]
+            reports = [uv.analyze(obj) for obj in objects]
+            found = uv.audit(objects)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+
+        lines = [i18n.T("uv.title")]
+        for report in reports:
+            lines.append(uv.format_report(report))
+        if found:
+            lines.append("")
+            lines.append(findings.format_findings(found))
+        else:
+            lines.append(i18n.T("doctor.clean"))
+
+        message = "\n".join(lines)
+        state.add_display("result", message)
+        self.report({"INFO"}, i18n.T("uv.checked"))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_unwrap_uv(bpy.types.Operator):
+    """Развернуть выделенные объекты: швы по углу, развёртка, укладка"""
+
+    bl_idname = "gaa.unwrap_uv"
+    bl_label = "Развернуть"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            context.view_layer.update()
+            settings = uv.settings_from_scene(context.scene)
+            targets = uv.scope_objects(context)
+            if not targets:
+                self.report({"WARNING"}, i18n.T("uv.no_meshes"))
+                return {"CANCELLED"}
+            reports = uv.unwrap_objects(targets, settings, context)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+
+        done = [r for r in reports if r.get("ok")]
+        if not done:
+            problems = "; ".join(
+                f"{r['object']}: {r.get('error', 'failed')}" for r in reports
+            )
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=problems))
+            return {"CANCELLED"}
+
+        lines = [i18n.T("uv.unwrapped", n=len(done))]
+        for report in done:
+            lines.append(
+                f"- {report['object']}: {report['seams']} швов, "
+                f"метод {report['method']}"
+            )
+        state.add_display("result", "\n".join(lines))
+        self.report({"INFO"}, i18n.T("uv.unwrapped", n=len(done)))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_match_density(bpy.types.Operator):
+    """Выровнять плотность текселей по всему объекту"""
+
+    bl_idname = "gaa.match_density"
+    bl_label = "Плотность"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            context.view_layer.update()
+            settings = uv.settings_from_scene(context.scene)
+            targets = uv.scope_objects(context)
+            if not targets:
+                self.report({"WARNING"}, i18n.T("uv.no_meshes"))
+                return {"CANCELLED"}
+            reports = uv.match_density_scene(targets, settings.density, context)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+
+        done = [r for r in reports if r.get("ok")]
+        if not done:
+            self.report({"ERROR"}, i18n.T("uv.failed", exc="nothing changed"))
+            return {"CANCELLED"}
+
+        lines = [i18n.T("uv.density_target", n=int(settings.density))]
+        for report in done:
+            after = ", ".join(f"{d}" for d in report["after"]) or "-"
+            line = f"- {report['object']}: {after} px/м"
+            if not report.get("fits", True):
+                line += f" (текстура нужна {report['needed_size']}px)"
+            lines.append(line)
+        state.add_display("result", "\n".join(lines))
+        self.report({"INFO"}, i18n.T("uv.density_done", n=len(done)))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_build_atlas(bpy.types.Operator):
+    """Собрать общий атлас из островов выделенных объектов"""
+
+    bl_idname = "gaa.build_atlas"
+    bl_label = "Собрать атлас"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            context.view_layer.update()
+            settings = uv.settings_from_scene(context.scene)
+            targets = uv.scope_objects(context)
+            if not targets:
+                self.report({"WARNING"}, i18n.T("uv.no_meshes"))
+                return {"CANCELLED"}
+            report = uv.build_atlas(targets, settings, context)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not report.get("ok"):
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=report.get("error")))
+            return {"CANCELLED"}
+
+        lines = [
+            i18n.T(
+                "uv.atlas_done",
+                n=report["islands"],
+                used=report["used"],
+                size=report["atlas"],
+            )
+        ]
+        if report["achieved"]:
+            lines.append(
+                i18n.T(
+                    "uv.atlas_density",
+                    achieved=round(report["achieved"], 1),
+                    target=int(report["target"]),
+                )
+            )
+        if report["needed_size"] > report["atlas"]:
+            lines.append(
+                i18n.T("uv.atlas_too_small", size=report["needed_size"])
+            )
+        message = "\n".join(lines)
+        state.add_display("result", message)
+        self.report({"INFO"}, lines[0])
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_export_uv_kit(bpy.types.Operator):
+    """Выгрузить UV-комплект для рисования в другой программе"""
+
+    bl_idname = "gaa.export_uv_kit"
+    bl_label = "Выгрузить UV-комплект"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        try:
+            context.view_layer.update()
+            targets = uv.scope_objects(context)
+            if not targets:
+                self.report({"WARNING"}, i18n.T("uv.no_meshes"))
+                return {"CANCELLED"}
+            settings = uv.settings_from_scene(context.scene)
+            report = exchange.export_kit(targets, None, None, settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+
+        message = (
+            i18n.T("uv.kit_done", folder=report["folder"])
+            + "\n"
+            + f"- {report['layout']}\n"
+            + f"- {report['manifest']}"
+        )
+        state.add_display("result", message)
+        self.report({"INFO"}, i18n.T("uv.kit_done", folder=report["folder"]))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_import_atlas(bpy.types.Operator):
+    """Поставить нарисованный атлас в материал активного объекта"""
+
+    bl_idname = "gaa.import_atlas"
+    bl_label = "Импортировать атлас"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.png", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if not self.filepath:
+            return {"CANCELLED"}
+        try:
+            report = exchange.import_atlas(self.filepath, context.active_object)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not report.get("ok"):
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=report.get("error")))
+            return {"CANCELLED"}
+        message = i18n.T(
+            "uv.atlas_imported",
+            image=report["image"],
+            material=report["material"],
+        )
+        state.add_display("result", message)
+        self.report({"INFO"}, message)
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_bake_textures(bpy.types.Operator):
+    """Запечь процедурный материал в текстуры"""
+
+    bl_idname = "gaa.bake_textures"
+    bl_label = "Запечь текстуры"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        if obj is None:
+            self.report({"WARNING"}, i18n.T("bake.no_object"))
+            return {"CANCELLED"}
+
+        problems = baking.check_ready(obj)
+        blocking = [p for p in problems if p.severity == findings.ERROR]
+        if blocking:
+            message = i18n.T("bake.not_ready") + "\n" + "\n".join(
+                f"- {p.text()}" for p in blocking
+            )
+            state.add_display("error", message)
+            self.report({"ERROR"}, i18n.T("bake.not_ready"))
+            return {"CANCELLED"}
+
+        settings = uv.settings_from_scene(context.scene)
+        size = int(settings.atlas)
+        try:
+            report = baking.bake(
+                obj,
+                targets=("albedo", "normal"),
+                size=size,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("bake.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not report.get("ok"):
+            self.report({"ERROR"}, i18n.T("bake.failed", exc=report.get("error")))
+            state.add_display("error", i18n.T("bake.failed", exc=report.get("error")))
+            return {"CANCELLED"}
+
+        message = i18n.T(
+            "bake.done",
+            maps=", ".join(report["maps"]),
+            obj=report["object"],
+            seconds=round(report["seconds"], 1),
+        )
+        state.add_display("result", message)
+        self.report({"INFO"}, i18n.T("bake.done_short"))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_height_to_normal(bpy.types.Operator):
+    """Сделать карту нормалей из карты высот"""
+
+    bl_idname = "gaa.height_to_normal"
+    bl_label = "Высота → нормали"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.png", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if not self.filepath:
+            return {"CANCELLED"}
+        try:
+            source = bpy.data.images.load(self.filepath, check_existing=True)
+            image = heightmap.height_to_normal(source, 1.0, False)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("bake.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if image is None:
+            self.report({"ERROR"}, i18n.T("bake.failed", exc="the image is empty"))
+            return {"CANCELLED"}
+
+        assigned = heightmap.assign_to_material(image, context.active_object)
+        message = i18n.T("bake.normal_done", name=image.name)
+        if assigned:
+            message += " " + i18n.T("bake.normal_assigned")
+        state.add_display("result", message)
+        self.report({"INFO"}, message)
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_node_fix_colorspace(bpy.types.Operator):
+    """Поставить правильное цветовое пространство картинки"""
+
+    bl_idname = "gaa.node_fix_colorspace"
+    bl_label = "Fix colour space"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        node = getattr(context, "node", None)
+        image = getattr(node, "image", None) if node is not None else None
+        if image is None:
+            return {"CANCELLED"}
+        wanted = textures.expected_colorspace(image)
+        if wanted is None:
+            self.report(
+                {"INFO"},
+                i18n.T("uv.colorspace_unknown", name=image.name),
+            )
+            return {"FINISHED"}
+        before = image.colorspace_settings.name
+        if before == wanted:
+            self.report({"INFO"}, i18n.T("uv.colorspace_ok", name=image.name))
+            return {"FINISHED"}
+        try:
+            image.colorspace_settings.name = wanted
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            i18n.T("uv.colorspace_set", name=image.name, before=before, after=wanted),
+        )
+        return {"FINISHED"}
+
+
+class GAA_OT_node_pack(bpy.types.Operator):
+    """Упаковать картинку в .blend"""
+
+    bl_idname = "gaa.node_pack"
+    bl_label = "Pack into the .blend"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        node = getattr(context, "node", None)
+        image = getattr(node, "image", None) if node is not None else None
+        if image is None:
+            return {"CANCELLED"}
+        if image.packed_file is not None:
+            self.report({"INFO"}, i18n.T("uv.already_packed", name=image.name))
+            return {"FINISHED"}
+        try:
+            image.pack()
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, i18n.T("uv.packed", name=image.name))
+        return {"FINISHED"}
+
+
+class GAA_OT_node_make_relative(bpy.types.Operator):
+    """Сделать путь к картинке относительным"""
+
+    bl_idname = "gaa.node_make_relative"
+    bl_label = "Make the path relative"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        node = getattr(context, "node", None)
+        image = getattr(node, "image", None) if node is not None else None
+        if image is None or not image.filepath:
+            return {"CANCELLED"}
+        if image.filepath.startswith("//"):
+            self.report({"INFO"}, i18n.T("uv.already_relative", name=image.name))
+            return {"FINISHED"}
+        base = uv.blend_dir()
+        if not base:
+            self.report({"WARNING"}, i18n.T("uv.not_saved"))
+            return {"CANCELLED"}
+        try:
+            relative = bpy.path.relpath(image.filepath, start=bpy.data.filepath)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+        image.filepath = relative
+        self.report({"INFO"}, i18n.T("uv.relative_set", name=image.name, path=relative))
+        return {"FINISHED"}
+
+
+class GAA_OT_node_set_base_color(bpy.types.Operator):
+    """Подключить картинку в Base Color"""
+
+    bl_idname = "gaa.node_set_base_color"
+    bl_label = "Set as Base Color"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        return _node_set_input(context, "Base Color", "Base Color")
+
+
+class GAA_OT_node_set_roughness(bpy.types.Operator):
+    """Подключить картинку в Roughness"""
+
+    bl_idname = "gaa.node_set_roughness"
+    bl_label = "Set as Roughness"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        return _node_set_input(context, "Roughness", "Roughness")
+
+
+class GAA_OT_node_set_normal(bpy.types.Operator):
+    """Подключить картинку в Normal (через узел Normal Map)"""
+
+    bl_idname = "gaa.node_set_normal"
+    bl_label = "Set as Normal"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        node = getattr(context, "node", None)
+        image = getattr(node, "image", None) if node is not None else None
+        if image is None:
+            return {"CANCELLED"}
+        tree = node.id_data
+        bsdf = api.find_principled(tree)
+        if bsdf is None:
+            self.report({"WARNING"}, i18n.T("uv.no_principled"))
+            return {"CANCELLED"}
+        normal_socket = api.get_input(bsdf, "Normal")
+        if normal_socket is None:
+            return {"CANCELLED"}
+
+        # A normal map has to go through a Normal Map node - plugging it
+        # straight into the Normal input is the classic mistake.
+        normal_map = None
+        for link in normal_socket.links:
+            if link.from_node.type == "NORMAL_MAP":
+                normal_map = link.from_node
+                break
+        if normal_map is None:
+            normal_map = tree.nodes.new("ShaderNodeNormalMap")
+            normal_map.name = "Normal Map"
+            normal_map.location = (node.location.x + 250, node.location.y - 200)
+            for link in list(normal_socket.links):
+                tree.links.remove(link)
+            tree.links.new(normal_map.outputs["Normal"], normal_socket)
+        for link in list(normal_map.inputs["Color"].links):
+            tree.links.remove(link)
+        tree.links.new(node.outputs["Color"], normal_map.inputs["Color"])
+        self.report({"INFO"}, i18n.T("uv.node_connected", socket="Normal"))
+        return {"FINISHED"}
+
+
+def _node_set_input(context, socket_name: str, label: str):
+    """Connect the image under the mouse to a socket of the Principled BSDF."""
+    node = getattr(context, "node", None)
+    image = getattr(node, "image", None) if node is not None else None
+    if image is None:
+        return {"CANCELLED"}
+    tree = node.id_data
+    bsdf = api.find_principled(tree)
+    if bsdf is None:
+        return {"CANCELLED"}
+    socket = api.get_input(bsdf, socket_name)
+    if socket is None:
+        return {"CANCELLED"}
+    tree.links.new(node.outputs["Color"], socket)
+    return {"FINISHED"}
+
+
+class GAA_OT_procedural_build(bpy.types.Operator):
+    """Собрать процедурный материал по описанию"""
+
+    bl_idname = "gaa.procedural_build"
+    bl_label = "Процедурный материал"
+    bl_options = {"REGISTER", "UNDO"}
+
+    description: StringProperty(name="Описание", default="")
+    recipe: StringProperty(name="Рецепт", default="")
+
+    def execute(self, context):
+        try:
+            text = self.description.strip()
+            recipe = self.recipe.strip()
+            if not recipe and text:
+                matched = procedural.match_recipes(text, limit=1)
+                if matched:
+                    recipe = matched[0][0].name
+            if not recipe:
+                self.report(
+                    {"WARNING"},
+                    i18n.T("procedural.no_recipe", text=text or "?"),
+                )
+                return {"CANCELLED"}
+            material = procedural.build_from_recipe(recipe, self.description[:40] or "")
+            if material is None:
+                self.report({"ERROR"}, i18n.T("procedural.unknown", recipe=recipe))
+                return {"CANCELLED"}
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("procedural.failed", exc=exc))
+            return {"CANCELLED"}
+
+        message = i18n.T("procedural.built", name=material.name)
+        state.add_display("result", message)
+        self.report({"INFO"}, message)
+        state._redraw()
         return {"FINISHED"}
 
 
@@ -538,6 +1429,32 @@ _classes = (
     GAA_OT_open_image_editor,
     GAA_OT_use_preset,
     GAA_OT_pbr_from_folder,
+    GAA_OT_material_doctor,
+    GAA_OT_material_fix,
+    GAA_OT_pack_textures,
+    GAA_OT_fix_paths,
+    GAA_OT_texture_report,
+    GAA_OT_assign_to_selection,
+    GAA_OT_find_material_users,
+    GAA_OT_import_textures,
+    GAA_OT_check_export,
+    GAA_OT_tool_confirm,
+    GAA_OT_tool_cancel,
+    GAA_OT_check_uv,
+    GAA_OT_unwrap_uv,
+    GAA_OT_match_density,
+    GAA_OT_build_atlas,
+    GAA_OT_export_uv_kit,
+    GAA_OT_import_atlas,
+    GAA_OT_bake_textures,
+    GAA_OT_height_to_normal,
+    GAA_OT_node_fix_colorspace,
+    GAA_OT_node_pack,
+    GAA_OT_node_make_relative,
+    GAA_OT_node_set_base_color,
+    GAA_OT_node_set_roughness,
+    GAA_OT_node_set_normal,
+    GAA_OT_procedural_build,
 )
 
 # bl_label and the class docstring (Blender's tooltip) are copied into RNA at
@@ -554,6 +1471,32 @@ _OPERATOR_KEYS = {
     "gaa.open_image_editor": "op.open_image",
     "gaa.use_preset": "op.use_preset",
     "gaa.pbr_from_folder": "op.pbr_folder",
+    "gaa.material_doctor": "op.material_doctor",
+    "gaa.material_fix": "op.material_fix",
+    "gaa.pack_textures": "op.pack_textures",
+    "gaa.fix_paths": "op.fix_paths",
+    "gaa.texture_report": "op.texture_report",
+    "gaa.assign_to_selection": "op.assign_to_selection",
+    "gaa.find_material_users": "op.find_users",
+    "gaa.import_textures": "op.import_textures",
+    "gaa.check_export": "op.check_export",
+    "gaa.tool_confirm": "op.tool_confirm",
+    "gaa.tool_cancel": "op.tool_cancel",
+    "gaa.check_uv": "op.check_uv",
+    "gaa.unwrap_uv": "op.unwrap_uv",
+    "gaa.match_density": "op.match_density",
+    "gaa.build_atlas": "op.build_atlas",
+    "gaa.export_uv_kit": "op.export_uv_kit",
+    "gaa.import_atlas": "op.import_atlas",
+    "gaa.bake_textures": "op.bake_textures",
+    "gaa.height_to_normal": "op.height_to_normal",
+    "gaa.node_fix_colorspace": "op.node_fix_colorspace",
+    "gaa.node_pack": "op.node_pack",
+    "gaa.node_make_relative": "op.node_make_relative",
+    "gaa.node_set_base_color": "op.node_set_base_color",
+    "gaa.node_set_roughness": "op.node_set_roughness",
+    "gaa.node_set_normal": "op.node_set_normal",
+    "gaa.procedural_build": "op.procedural_build",
 }
 
 

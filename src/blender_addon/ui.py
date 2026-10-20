@@ -163,6 +163,26 @@ def draw_chat(
             row.operator("gaa.run_code", icon="PLAY")
         row.operator("gaa.code_to_text", text="", icon="TEXT")
 
+    # -- confirmation of a destructive tool --------------------------------
+    pending = getattr(chat, "pending_confirmation", None)
+    if pending:
+        box = layout.box()
+        box.label(
+            text=i18n.T("msg.tool_confirm_title", name=pending.get("title", "")),
+            icon="ERROR",
+        )
+        description = pending.get("description", "")
+        if description:
+            for line in textwrap.wrap(description, width=wrap_width)[:4]:
+                box.label(text=line)
+        preview = pending.get("preview", "")
+        if preview:
+            box.label(text=i18n.T("msg.tool_confirm_preview", preview=preview))
+        row = box.row(align=True)
+        row.scale_y = 1.3
+        row.operator("gaa.tool_confirm", icon="CHECKMARK")
+        row.operator("gaa.tool_cancel", icon="X")
+
     # -- input -----------------------------------------------------------
     layout.prop(wm, "gaa_input", text="", placeholder=i18n.T("input.placeholder"))
 
@@ -181,6 +201,71 @@ def draw_chat(
     # Build a material straight from a folder of texture maps — the preset
     # above only *asks* the assistant to do it; this button does it itself.
     box.operator("gaa.pbr_from_folder", icon="FILE_FOLDER")
+
+    # The material doctor: find what is wrong with the materials of the
+    # scene. The second button applies the repairs it can make on its own.
+    row = box.row(align=True)
+    row.operator("gaa.material_doctor", icon="CHECKMARK")
+    row.operator("gaa.material_fix", icon="FILE_REFRESH")
+
+    # Textures: make the project travel with its textures, and keep the paths
+    # portable. These three are the everyday hygiene of a .blend file.
+    box = layout.box()
+    box.label(text=i18n.T("textures.box"), icon="TEXTURE")
+    row = box.row(align=True)
+    row.operator("gaa.pack_textures", icon="PACKAGE")
+    row.operator("gaa.fix_paths", icon="FILE_REFRESH")
+    row.operator("gaa.texture_report", icon="INFO")
+
+    # Mass operations: the material of the active object onto the whole
+    # selection, and who else uses that material.
+    box = layout.box()
+    box.label(text=i18n.T("bulk.box"), icon="GROUP")
+    row = box.row(align=True)
+    row.operator("gaa.assign_to_selection", icon="GROUP")
+    row.operator("gaa.find_material_users", icon="QUESTION")
+
+    # The whole workflow in one click: a texture folder in - a ready project
+    # out (material, assignment, packing, export check).
+    box = layout.box()
+    box.label(text=i18n.T("project.title"), icon="IMPORT")
+    row = box.row(align=True)
+    row.operator("gaa.import_textures", icon="FILE_FOLDER")
+    row.operator("gaa.check_export", icon="EXPORT")
+
+    # UV: the texel density is the one problem that is invisible in the
+    # editor and very visible in a game.
+    box = layout.box()
+    box.label(text=i18n.T("uv.title"), icon="UV")
+    scene = getattr(context, "scene", None)
+    if scene is not None:
+        layout.prop(scene, "gaa_uv_angle", text=i18n.T("uv.angle"))
+        layout.prop(
+            scene,
+            "gaa_uv_use_existing_seams",
+            text=i18n.T("uv.own_seams"),
+        )
+    row = box.row(align=True)
+    row.operator("gaa.unwrap_uv", icon="MOD_EXTRUDE")
+    row.operator("gaa.match_density", icon="FULLSCREEN_ENTER")
+    row.operator("gaa.check_uv", icon="CHECKMARK")
+    row = box.row(align=True)
+    row.operator("gaa.build_atlas", icon="TEXTURE")
+    row = box.row(align=True)
+    row.operator("gaa.export_uv_kit", icon="EXPORT")
+    row.operator("gaa.import_atlas", icon="IMPORT")
+
+    # Baking: turn a procedural material into textures the game can read.
+    box = layout.box()
+    box.label(text=i18n.T("bake.title"), icon="RENDER_STILL")
+    row = box.row(align=True)
+    row.operator("gaa.bake_textures", icon="RENDER_STILL")
+    row.operator("gaa.height_to_normal", icon="NORMALS_VERTEX")
+
+    # Procedural materials: built from a description, graph assembled by code.
+    box = layout.box()
+    box.label(text=i18n.T("procedural.title"), icon="NODE_MATERIAL")
+    box.operator("gaa.procedural_build", icon="ADD")
 
     row = layout.row(align=True)
     row.operator("gaa.clear", icon="TRASH")

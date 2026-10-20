@@ -145,3 +145,53 @@ def test_cache_returns_the_same_list_until_files_change():
     first = library()
     second = skills.get_skills(SKILLS_DIR, BLENDER)
     assert first is second
+
+
+# -- keyword matching -------------------------------------------------------
+
+
+def test_keyword_match_picks_the_obvious_recipe():
+    loaded = library()
+    picked = skills.match(loaded, "сделай стеклянный материал")
+    assert [skill.name for skill in picked] == ["material-glass"]
+
+
+def test_keyword_match_works_in_english():
+    loaded = library()
+    picked = skills.match(loaded, "make a chrome material")
+    assert "material-metal-roughness" in [skill.name for skill in picked]
+
+
+def test_generic_words_alone_do_not_pull_a_skill_in():
+    loaded = library()
+    # "texture" and "map" are weak keywords: they appear in almost every
+    # material question and must never decide on their own.
+    assert skills.match(loaded, "текстура") == []
+    assert skills.match(loaded, "a texture") == []
+
+
+def test_keyword_match_respects_word_boundaries():
+    loaded = library()
+    # "ao" must not match inside "board"; "map" must not match "mapping".
+    assert skills.match(loaded, "board texture mapping") == []
+
+
+def test_keyword_match_returns_nothing_for_an_empty_request():
+    loaded = library()
+    assert skills.match(loaded, "") == []
+    assert skills.match(loaded, "   ") == []
+
+
+def test_keyword_match_respects_the_limit():
+    loaded = library()
+    picked = skills.match(loaded, "стекло прозрачность металл roughness", limit=2)
+    assert len(picked) <= 2
+
+
+def test_score_keywords_orders_by_strength():
+    loaded = library()
+    scored = skills.score_keywords(loaded, "сделай стеклянный материал")
+    assert scored
+    scores = [score for score, _ in scored]
+    assert scores == sorted(scores, reverse=True)
+    assert scored[0][1].name == "material-glass"
