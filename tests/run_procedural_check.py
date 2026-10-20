@@ -61,6 +61,124 @@ def part_recipes(procedural):
         check(bool(recipe.keywords), f"{name} has keywords")
 
 
+def part_brick(procedural):
+    print("\n== the brick pattern")
+    material = procedural.build_from_recipe("brick", "TestBrick")
+    check(material is not None, "the brick recipe builds a material")
+    if material is None:
+        return
+
+    bricks = nodes_of_type(material, "TEX_BRICK")
+    check(len(bricks) == 1, "there is a brick texture")
+    if not bricks:
+        return
+    brick = bricks[0]
+
+    # The brick node knows the bricks, the mortar and the per-brick variation.
+    check(
+        abs(brick.inputs["Mortar Size"].default_value - 0.02) < 0.001,
+        "the mortar size is the recipe's",
+    )
+    check(
+        abs(brick.inputs["Brick Width"].default_value - 0.5) < 0.001,
+        "the brick width is the recipe's",
+    )
+    check(
+        abs(brick.inputs["Row Height"].default_value - 0.25) < 0.001,
+        "the row height is the recipe's",
+    )
+
+    bsdf = next((n for n in material.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    check(
+        bsdf is not None and bool(bsdf.inputs["Base Color"].links),
+        "the brick colours go into the Base Color",
+    )
+    # The mortar must be rougher and lower than the bricks.
+    rough = nodes_of_type(material, "MAP_RANGE")
+    check(len(rough) >= 2, f"there are the mortar maps ({len(rough)})")
+    if len(rough) >= 2 and bsdf is not None:
+        to_min = rough[0].inputs["To Min"].default_value
+        to_max = rough[0].inputs["To Max"].default_value
+        check(
+            to_max > to_min,
+            f"the mortar is rougher than the brick ({to_min:.2f}..{to_max:.2f})",
+        )
+    check(len(nodes_of_type(material, "BUMP")) == 1, "there is a bump")
+    # A brick wall must not look like a colour ramp: the ramp is the noise
+    # path, the brick node does its own colouring.
+    check(
+        len(nodes_of_type(material, "VALTORGB")) == 0,
+        "the brick node does the colouring, there is no ramp",
+    )
+
+
+def part_brick_tool(procedural, tools):
+    print("\n== building a brick from the tool")
+    result = tools.execute(
+        "procedural.build",
+        {
+            "recipe": "brick",
+            "name": "ToolBrick",
+            "color_a": "#7a3b26",
+            "mortar_size": 0.03,
+            "brick_width": 0.4,
+        },
+    )
+    check(result.ok, f"the build tool runs ({result.report[:60]})")
+    material = bpy.data.materials.get("ToolBrick")
+    check(material is not None, "the material is in the file")
+    if material is not None:
+        brick = nodes_of_type(material, "TEX_BRICK")
+        check(len(brick) == 1, "it is a brick texture")
+        if brick:
+            check(
+                abs(brick[0].inputs["Mortar Size"].default_value - 0.03) < 0.001,
+                "the parameter override reached the node",
+            )
+            check(
+                abs(brick[0].inputs["Brick Width"].default_value - 0.4) < 0.001,
+                "the brick width override reached the node",
+            )
+
+    # A material that is not in the catalogue can still be built, if the
+    # pattern is given.
+    result = tools.execute(
+        "procedural.build",
+        {"name": "ToolBrickRaw", "pattern": "brick", "color_a": "#5a5a5a"},
+    )
+    check(result.ok, f"a brick without a recipe builds ({result.report[:60]})")
+    raw = bpy.data.materials.get("ToolBrickRaw")
+    check(
+        raw is not None and len(nodes_of_type(raw, "TEX_BRICK")) == 1,
+        "the explicit pattern was used",
+    )
+
+    # The material must land on the object, not only in the file.
+    bpy.ops.mesh.primitive_cube_add()
+    cube = bpy.context.active_object
+    result = tools.execute(
+        "procedural.build", {"recipe": "brick", "name": "InstalledBrick"}
+    )
+    check(result.ok, "the build tool runs")
+    check(
+        "assigned it to" in result.report,
+        f"the report says it was installed ({result.report[:90]})",
+    )
+    check(
+        cube.data.materials and cube.data.materials[0].name == "InstalledBrick",
+        f"the object wears the new material "
+        f"({[m.name for m in cube.data.materials]})",
+    )
+
+    # An unknown recipe must point at the close ones.
+    result = tools.execute("procedural.build", {"recipe": "brik"})
+    check(result.ok, "an unknown recipe is answered")
+    check(
+        "brick" in result.report,
+        f"the answer suggests the close recipe ({result.report[:80]})",
+    )
+
+
 def part_matching(procedural):
     print("\n== matching a description")
     matched = procedural.match_recipes("сделай тёмное дерево")
@@ -71,6 +189,14 @@ def part_matching(procedural):
     matched = procedural.match_recipes("a rusty metal surface")
     names = [r.name for r, _ in matched]
     check("rust" in names, f"rust is among the matches ({names})")
+
+    matched = procedural.match_recipes("сделай кирпичную стену")
+    names = [r.name for r, _ in matched]
+    check("brick" in names, f"a brick wall finds the brick recipe ({names})")
+
+    matched = procedural.match_recipes("настенная плитка")
+    names = [r.name for r, _ in matched]
+    check("tile" in names, f"tiles find the tile recipe ({names})")
 
     check(
         not procedural.match_recipes("просто сделай что-нибудь"),
@@ -157,6 +283,7 @@ def part_patterns(procedural):
         ("checker", "TEX_CHECKER"),
         ("gradient", "TEX_GRADIENT"),
         ("noise", "TEX_NOISE"),
+        ("brick", "TEX_BRICK"),
     ):
         spec = procedural.ProcSpec(name=f"P_{pattern}", pattern=pattern)
         material = procedural.build_material(spec)
@@ -243,6 +370,8 @@ def main():
         part_matching(procedural)
         part_build(procedural)
         part_patterns(procedural)
+        part_brick(procedural)
+        part_brick_tool(procedural, importlib.import_module("blender_addon.tools"))
         part_overrides(procedural)
         part_tools(procedural)
         part_menu()

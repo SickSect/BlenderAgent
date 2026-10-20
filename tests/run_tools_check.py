@@ -252,6 +252,184 @@ def part_context(state, tools):
     check("tool" not in chat.history[-1]["content"], "the request block is stripped")
 
 
+def part_context_repeat(state, tools):
+    print("\n== the loop stops when the model repeats itself")
+    chat = state.ChatState()
+    chat.commands_path = Path(tempfile.mkdtemp(prefix="gaa_loop_")) / "commands.jsonl"
+    chat.commands_path.write_text("", encoding="utf-8")
+    chat.system_prompt = "SYS"
+    chat.last_config = {"kind": "ollama", "host": "http://localhost:11434"}
+    chat.last_max_chars = 8000
+    chat.busy = True
+    chat.history = [{"role": "user", "content": "сделай процедурный материал"}]
+
+    # Round 1: the model asks for a tool.
+    chat._handle(
+        {
+            "type": "chunk",
+            "text": 'Сделаю.\n```tool\nprocedural.build {"recipe": "wood", '
+            '"name": "LoopWood"}\n```\n',
+        }
+    )
+    chat._handle({"type": "done"})
+    check(chat.busy, "the turn stays busy while the tool runs")
+    check(bool(chat.tool_results), "the tool ran")
+
+    # The model must see what it said and what the tool answered - otherwise
+    # it is asked the same question again with no memory and starts the same
+    # answer from scratch.
+    roles = [message["role"] for message in chat.history]
+    check("assistant" in roles, "the model's own reply is in the conversation")
+    check(roles.count("user") >= 2, "the tool report came back as a message")
+    written = chat.commands_path.read_text(encoding="utf-8").strip().splitlines()
+    check(len(written) == 1, "exactly one extra request was written")
+    if written:
+        import json
+
+        messages = json.loads(written[-1])["messages"]
+        check(
+            any(message["role"] == "assistant" for message in messages),
+            "the re-sent conversation carries the model's own reply",
+        )
+        check(
+            any(
+                message["role"] == "user" and "procedural.build" in message["content"]
+                for message in messages
+            ),
+            "the tool report is a message the model can read",
+        )
+
+    # Round 2: the same tool again, with other parameters. The model is not
+    # reading the reports, and every extra call would create another copy of
+    # the material - so the call must not run.
+    before = len(chat.tool_results)
+    chat._handle(
+        {
+            "type": "chunk",
+            "text": 'Снова.\n```tool\nprocedural.build {"recipe": "marble", '
+            '"name": "LoopMarble"}\n```\n',
+        }
+    )
+    chat._handle({"type": "done"})
+    check(
+        len(chat.tool_results) == before,
+        "the repeated call did not run the tool again",
+    )
+    check(not chat.busy, "the turn closes instead of looping")
+    check(
+        bpy.data.materials.get("LoopMarble") is None,
+        "no duplicate material was created",
+    )
+
+
+def part_code_survives(state, tools):
+    print("\n== the code of a turn survives a tool call")
+    wm = bpy.context.window_manager
+    before = len(wm.gaa_messages)
+
+    chat = state.ChatState()
+    chat.commands_path = Path(tempfile.mkdtemp(prefix="gaa_code_")) / "commands.jsonl"
+    chat.commands_path.write_text("", encoding="utf-8")
+    chat.system_prompt = "SYS"
+    chat.last_config = {"kind": "ollama", "host": "http://localhost:11434"}
+    chat.last_max_chars = 8000
+    chat.busy = True
+    chat.history = [{"role": "user", "content": "сделай материал"}]
+    state.add_display("user", "сделай материал")
+    state.add_display("assistant", "")
+
+    # The model writes the script and calls a tool in the same reply.
+    chat._handle(
+        {
+            "type": "chunk",
+            "text": "Сделаю.\n```tool\nprocedural.list\n```\n"
+            "Вот код:\n```python\nimport bpy\nmat = bpy.data.materials.new('X')\n```\n",
+        }
+    )
+    chat._handle({"type": "done"})
+
+    check(bool(chat.tool_results), "the tool ran")
+    check(
+        "bpy.data.materials.new" in chat.pending_code,
+        f"the code is still on offer: {chat.pending_code[:60]!r}",
+    )
+    check(
+        len(wm.gaa_messages) >= before + 2,
+        "the chat grew: the model's message was not overwritten",
+    )
+    bodies = [item.body for item in wm.gaa_messages]
+    check(
+        any("bpy.data.materials.new" in body for body in bodies),
+        "the model's own message (with the code) is still in the chat",
+    )
+
+    # The next round answers; the code must still be there.
+    chat._handle({"type": "chunk", "text": "Отлично, материал готов."})
+    chat._handle({"type": "done"})
+    check(not chat.busy, "the turn closes")
+    check(
+        "bpy.data.materials.new" in chat.pending_code,
+        "the code survived the whole turn",
+    )
+
+
+def part_json_in_code(state, tools):
+    print("\n== a JSON dict inside python code is not a tool call")
+    chat = state.ChatState()
+    chat.commands_path = Path(tempfile.mkdtemp(prefix="gaa_json_")) / "commands.jsonl"
+    chat.commands_path.write_text("", encoding="utf-8")
+    chat.system_prompt = "SYS"
+    chat.last_config = {"kind": "ollama", "host": "http://localhost:11434"}
+    chat.last_max_chars = 8000
+    chat.busy = True
+    chat.history = [{"role": "user", "content": "сделай материал"}]
+
+    chat._handle(
+        {
+            "type": "chunk",
+            "text": 'Вот код:\n```python\ncfg = {"name": "procedural.build", '
+            '"arguments": {"recipe": "wood"}}\nimport bpy\n```\n',
+        }
+    )
+    chat._handle({"type": "done"})
+    check(not chat.tool_results, "no tool was called")
+    check(not chat.busy, "the turn closed on the first answer")
+    check(
+        "procedural.build" in chat.pending_code,
+        "the code with the dict is on offer",
+    )
+
+
+def part_history_export(state):
+    print("\n== the conversation can be saved for analysis")
+    wm = bpy.context.window_manager
+    state.add_display("user", "сделай кирпич")
+    state.add_display("assistant", "```tool\nprocedural.build\n```")
+
+    chat = state.get_state()
+    chat.history = [
+        {"role": "user", "content": "сделай кирпич"},
+        {"role": "assistant", "content": "```tool\nprocedural.build\n```"},
+        {"role": "user", "content": "[Инструмент procedural.build] отработал."},
+    ]
+    chat.tool_history = [
+        {"id": "procedural.build", "params": {"recipe": "brick"},
+         "report": "Built the procedural material 'Brick'.", "ok": True},
+    ]
+
+    result = bpy.ops.gaa.history_to_text()
+    check(result == {"FINISHED"}, f"the operator runs ({result})")
+    text = bpy.data.texts.get("AI Assistant History")
+    check(text is not None, "the text datablock was created")
+    if text is not None:
+        body = text.as_string()
+        check("сделай кирпич" in body, "the user's message is in the file")
+        check("procedural.build" in body, "the tool call is in the file")
+        check("Built the procedural material" in body, "the tool report is in the file")
+    # The chat itself is not touched by the export.
+    check(len(wm.gaa_messages) >= 2, "the chat still holds its messages")
+
+
 # -- runner -----------------------------------------------------------------
 
 
@@ -276,6 +454,10 @@ def main():
         part_operator(tools, materials, cube, folder)
         part_tools(tools, cube, folder)
         part_context(state, tools)
+        part_context_repeat(state, tools)
+        part_code_survives(state, tools)
+        part_json_in_code(state, tools)
+        part_history_export(state)
     finally:
         package.unregister()
 

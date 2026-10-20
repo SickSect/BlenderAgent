@@ -106,6 +106,7 @@ STRINGS = {
         "msg.output": "Вывод:",
         "msg.code_error": "Ошибка выполнения кода:",
         "msg.code_saved": "Код сохранён в текст «{name}»",
+        "msg.history_saved": "Переписка сохранена в текст «{name}»",
         "msg.window_failed": "Не удалось открыть окно чата: {exc}",
         "msg.settings_failed": "Не удалось открыть настройки: {exc}",
         "msg.send_failed": "Не удалось отправить запрос",
@@ -367,6 +368,15 @@ STRINGS = {
         "err.unknown": "Неизвестная ошибка воркера",
         "msg.empty_reply": "(пустой ответ)",
         "msg.skill_loading": "Читаю инструкцию: {name}…",
+        "msg.skill_ready": (
+            "[Инструкция {name}] загружена в системный промпт. Используй её и "
+            "продолжи ответ пользователю."
+        ),
+        "msg.tool_result": "[Инструмент {name}] отработал. Результат:\n{report}",
+        "msg.tool_repeat": (
+            "Инструмент «{name}» уже выполнялся в этом запросе — повторный "
+            "вызов остановлен, чтобы не создать дубликаты."
+        ),
         "msg.tool_running": "Выполняю инструмент: {name}…",
         "msg.tool_done": "Инструмент выполнен. Результат:\n{report}",
         "msg.tool_confirm": "Инструмент «{name}» меняет данные — нужно подтверждение.",
@@ -483,6 +493,7 @@ STRINGS = {
         "msg.output": "Output:",
         "msg.code_error": "Code execution error:",
         "msg.code_saved": "Code saved to text «{name}»",
+        "msg.history_saved": "The conversation was saved to the text «{name}»",
         "msg.window_failed": "Failed to open the chat window: {exc}",
         "msg.settings_failed": "Failed to open the settings: {exc}",
         "msg.send_failed": "Failed to send the request",
@@ -746,6 +757,15 @@ STRINGS = {
         "err.unknown": "Unknown worker error",
         "msg.empty_reply": "(empty reply)",
         "msg.skill_loading": "Reading skill: {name}…",
+        "msg.skill_ready": (
+            "[Skill {name}] is now in the system prompt. Use it and continue "
+            "the answer."
+        ),
+        "msg.tool_result": "[Tool {name}] has run. Result:\n{report}",
+        "msg.tool_repeat": (
+            "The tool \"{name}\" already ran in this request - the repeat was "
+            "stopped so nothing is created twice."
+        ),
         "msg.tool_running": "Running tool: {name}…",
         "msg.tool_done": "The tool has run. Result:\n{report}",
         "msg.tool_confirm": "The tool \"{name}\" changes data - it needs your confirmation.",

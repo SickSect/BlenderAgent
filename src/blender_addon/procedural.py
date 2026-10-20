@@ -26,16 +26,17 @@ forgotten sockets, the same result every time.
 
 from __future__ import annotations
 
+import difflib
 import math
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import bpy
 
-from . import api, tools
+from . import api, materials, tools
 
 # The patterns the builder knows.
-PATTERNS = ("noise", "voronoi", "wave", "checker", "gradient")
+PATTERNS = ("noise", "voronoi", "wave", "checker", "gradient", "brick")
 
 # The parameters that can be given per material.
 PARAMETERS = (
@@ -56,6 +57,12 @@ PARAMETERS = (
     "emission_strength",
     "transmission",
     "ior",
+    # The layout of the brick pattern.
+    "mortar_size",
+    "mortar_smooth",
+    "brick_width",
+    "row_height",
+    "brick_bias",
 )
 
 
@@ -104,6 +111,14 @@ class ProcSpec:
     emission_strength: float = 0.0
     transmission: float = 0.0
     ior: float = 1.45
+    # The layout of the brick pattern. For the brick pattern the colours mean:
+    # color_a = the brick, color_mid = the second brick tone (the per-brick
+    # variation), color_b = the mortar.
+    mortar_size: float = 0.02
+    mortar_smooth: float = 0.1
+    brick_width: float = 0.5
+    row_height: float = 0.25
+    brick_bias: float = 0.0
 
     def normalized(self) -> "ProcSpec":
         """The spec with everything brought into a sane range."""
@@ -123,6 +138,11 @@ class ProcSpec:
         spec.roughness_variation = max(0.0, min(1.0, float(spec.roughness_variation)))
         spec.emission_strength = max(0.0, float(spec.emission_strength))
         spec.ior = max(1.0, float(spec.ior))
+        spec.mortar_size = max(0.0, min(0.5, float(spec.mortar_size)))
+        spec.mortar_smooth = max(0.0, min(1.0, float(spec.mortar_smooth)))
+        spec.brick_width = max(0.01, float(spec.brick_width))
+        spec.row_height = max(0.01, float(spec.row_height))
+        spec.brick_bias = max(0.0, min(1.0, float(spec.brick_bias)))
         spec.color_a = _color(spec.color_a)
         spec.color_b = _color(spec.color_b)
         if spec.color_mid is not None:
@@ -254,6 +274,39 @@ _add(_recipe(
     color_a=(0.05, 0.05, 0.05, 1.0), color_b=(0.9, 0.9, 0.9, 1.0),
     roughness=0.6,
 ))
+_add(_recipe(
+    "brick", "Brick", "Brick wall with mortar joints",
+    ("brick", "кирпич", "кладка", "кирпичная", "стена", "wall", "masonry",
+     "кирпичный", "кладка кирпича"),
+    pattern="brick", scale=6.0,
+    # color_a is the brick, color_mid is the second brick tone (the per-brick
+    # variation) and color_b is the mortar.
+    color_a=(0.42, 0.16, 0.10, 1.0), color_mid=(0.55, 0.24, 0.15, 1.0),
+    color_b=(0.62, 0.60, 0.56, 1.0),
+    mortar_size=0.02, mortar_smooth=0.1,
+    brick_width=0.5, row_height=0.25,
+    roughness=0.75, bump_strength=0.5,
+))
+_add(_recipe(
+    "tile", "Tile", "Square tiles with thin grout lines",
+    ("tile", "tiles", "плитка", "плиточ", "кафель", "черепица"),
+    pattern="brick", scale=8.0,
+    color_a=(0.62, 0.64, 0.63, 1.0), color_mid=(0.70, 0.72, 0.70, 1.0),
+    color_b=(0.35, 0.35, 0.34, 1.0),
+    mortar_size=0.008, mortar_smooth=0.0,
+    brick_width=0.5, row_height=0.5,   # square tiles: the width equals the height
+    roughness=0.28, bump_strength=0.2,
+))
+_add(_recipe(
+    "cobble", "Cobblestone", "Rounded stones with deep joints",
+    ("cobble", "cobblestone", "булыжник", "мостовая", "газон"),
+    pattern="brick", scale=4.0,
+    color_a=(0.38, 0.36, 0.33, 1.0), color_mid=(0.48, 0.45, 0.41, 1.0),
+    color_b=(0.20, 0.19, 0.17, 1.0),
+    mortar_size=0.06, mortar_smooth=0.3,
+    brick_width=0.6, row_height=0.35, brick_bias=0.2,
+    roughness=0.85, bump_strength=0.6,
+))
 
 
 # --- matching --------------------------------------------------------------
@@ -301,10 +354,25 @@ def _pattern_node(tree, pattern: str, location):
         node = tree.nodes.new("ShaderNodeTexChecker")
     elif pattern == "gradient":
         node = tree.nodes.new("ShaderNodeTexGradient")
+    elif pattern == "brick":
+        node = tree.nodes.new("ShaderNodeTexBrick")
     else:
         node = tree.nodes.new("ShaderNodeTexNoise")
     node.location = location
     return node
+
+
+def _brick_factor(node):
+    """The mortar mask of the brick node: 1 in the mortar, 0 in the brick.
+
+    The output was called "Fac" up to Blender 4.x and is called "Factor" in
+    5.x, so both names are tried.
+    """
+    for name in ("Factor", "Fac"):
+        socket = node.outputs.get(name)
+        if socket is not None:
+            return socket
+    return node.outputs[-1]
 
 
 def _set_input(node, name, value) -> bool:
@@ -373,29 +441,53 @@ def build_material(spec: ProcSpec) -> bpy.types.Material:
     links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
 
     # The colour ramp turns the texture into the two colours of the material.
-    ramp = nodes.new("ShaderNodeValToRGB")
-    ramp.name = "Color Ramp"
-    ramp.location = (-450, 150)
-    elements = ramp.color_ramp.elements
-    elements[0].position = 0.25
-    elements[0].color = spec.color_a
-    elements[1].position = 0.75
-    elements[1].color = spec.color_b
-    if spec.color_mid is not None:
-        middle = elements.new(0.5)
-        middle.color = spec.color_mid
+    # The brick, the checker and the gradient do their own colouring, so for
+    # them no ramp is created at all - a dead node in the graph is a dead node
+    # the user has to look at.
+    ramp = None
+    if spec.pattern not in ("brick", "checker", "gradient"):
+        ramp = nodes.new("ShaderNodeValToRGB")
+        ramp.name = "Color Ramp"
+        ramp.location = (-450, 150)
+        elements = ramp.color_ramp.elements
+        elements[0].position = 0.25
+        elements[0].color = spec.color_a
+        elements[1].position = 0.75
+        elements[1].color = spec.color_b
+        if spec.color_mid is not None:
+            middle = elements.new(0.5)
+            middle.color = spec.color_mid
 
-    if spec.pattern == "checker":
-        # A checker has its own colours; the ramp would only blur them.
+    if spec.pattern == "brick":
+        # The brick node does the colouring itself: it knows the bricks, the
+        # mortar and the per-brick variation. A ramp would only blur it.
+        _set_input(texture, "Color1", spec.color_a)
+        _set_input(texture, "Color2", spec.color_mid or spec.color_a)
+        _set_input(texture, "Mortar", spec.color_b)
+        _set_input(texture, "Mortar Size", spec.mortar_size)
+        _set_input(texture, "Mortar Smooth", spec.mortar_smooth)
+        _set_input(texture, "Bias", spec.brick_bias)
+        _set_input(texture, "Brick Width", spec.brick_width)
+        _set_input(texture, "Row Height", spec.row_height)
         links.new(texture.outputs["Color"], bsdf.inputs["Base Color"])
-    elif spec.pattern == "gradient":
+    elif spec.pattern in ("checker", "gradient"):
         links.new(texture.outputs["Color"], bsdf.inputs["Base Color"])
     else:
         links.new(_fac_output(texture), ramp.inputs["Fac"])
         links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
 
     # Roughness may vary with the texture.
-    if spec.roughness_variation > 0.0:
+    if spec.pattern == "brick":
+        # The mortar is rougher than the brick. The brick node's factor is 1
+        # in the mortar and 0 in the brick, so it drives the range directly.
+        rough = nodes.new("ShaderNodeMapRange")
+        rough.name = "Mortar Roughness"
+        rough.location = (-450, -150)
+        rough.inputs["To Min"].default_value = max(0.0, spec.roughness - 0.05)
+        rough.inputs["To Max"].default_value = min(1.0, spec.roughness + 0.2)
+        links.new(_brick_factor(texture), rough.inputs["Value"])
+        links.new(rough.outputs["Result"], bsdf.inputs["Roughness"])
+    elif spec.roughness_variation > 0.0:
         rough = nodes.new("ShaderNodeMapRange")
         rough.name = "Roughness Variation"
         rough.location = (-450, -150)
@@ -411,7 +503,23 @@ def build_material(spec: ProcSpec) -> bpy.types.Material:
         bsdf.inputs["Roughness"].default_value = spec.roughness
 
     # Bump from the same texture.
-    if spec.bump_strength > 0.0:
+    if spec.pattern == "brick":
+        # The mortar sits lower than the bricks: the height is the inverted
+        # mortar mask, so the bricks are high and the joints are recessed.
+        height = nodes.new("ShaderNodeMapRange")
+        height.name = "Mortar Height"
+        height.location = (-450, -350)
+        height.inputs["To Min"].default_value = 1.0
+        height.inputs["To Max"].default_value = 0.0
+        links.new(_brick_factor(texture), height.inputs["Value"])
+
+        bump = nodes.new("ShaderNodeBump")
+        bump.name = "Bump"
+        bump.location = (-250, -350)
+        bump.inputs["Strength"].default_value = spec.bump_strength
+        links.new(height.outputs["Result"], bump.inputs["Height"])
+        links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    elif spec.bump_strength > 0.0:
         bump = nodes.new("ShaderNodeBump")
         bump.name = "Bump"
         bump.location = (-250, -350)
@@ -433,8 +541,13 @@ def build_material(spec: ProcSpec) -> bpy.types.Material:
     return material
 
 
-def build_from_recipe(recipe_name: str, name: str = "", **overrides) -> Optional[bpy.types.Material]:
-    """Build a material from a named recipe, with the given overrides."""
+def spec_for(recipe_name: str, name: str = "", **overrides) -> Optional[ProcSpec]:
+    """The specification of a recipe with the overrides applied.
+
+    ``None`` when there is no such recipe. The tool uses it to report what
+    was actually built - the model has to be able to see that its parameters
+    arrived.
+    """
     recipe = RECIPES.get((recipe_name or "").strip().lower())
     if recipe is None:
         return None
@@ -443,6 +556,14 @@ def build_from_recipe(recipe_name: str, name: str = "", **overrides) -> Optional
     for key, value in overrides.items():
         if key in PARAMETERS and value is not None:
             setattr(spec, key, value)
+    return spec.normalized()
+
+
+def build_from_recipe(recipe_name: str, name: str = "", **overrides) -> Optional[bpy.types.Material]:
+    """Build a material from a named recipe, with the given overrides."""
+    spec = spec_for(recipe_name, name, **overrides)
+    if spec is None:
+        return None
     return build_material(spec)
 
 
@@ -456,11 +577,115 @@ def build_from_recipe(recipe_name: str, name: str = "", **overrides) -> Optional
     "fabric...) with what each one is for.",
 )
 def list_tool(**kwargs) -> str:
-    """Tool entry point: the recipe catalogue."""
-    lines = ["Procedural material recipes:"]
+    """Tool entry point: the recipe catalogue.
+
+    The pattern is part of the line on purpose: the model has to know that
+    "brick" is a structure and not noise, and the catalogue is where it
+    learns which is which.
+    """
+    lines = ["Procedural material recipes (pattern | scale | roughness | bump):"]
     for recipe in sorted(RECIPES.values(), key=lambda r: r.name):
-        keywords = ", ".join(recipe.keywords[:5])
-        lines.append(f"- {recipe.name}: {recipe.description} (keywords: {keywords})")
+        keywords = ", ".join(recipe.keywords[:6])
+        spec = recipe.spec
+        lines.append(
+            f"- {recipe.name}: {recipe.description} "
+            f"[pattern={spec.pattern}, scale={spec.scale:g}, "
+            f"roughness={spec.roughness:g}, bump={spec.bump_strength:g}] "
+            f"(keywords: {keywords})"
+        )
+    return "\n".join(lines)
+
+
+def closest_recipes(name: str, limit: int = 3) -> List[Recipe]:
+    """The recipes whose names are the closest to *name*.
+
+    Used to answer "there is no recipe called X" with something useful
+    instead of a bare list of every name.
+    """
+    wanted = (name or "").strip().lower()
+    if not wanted:
+        return []
+    matches = difflib.get_close_matches(wanted, list(RECIPES), n=limit, cutoff=0.4)
+    return [RECIPES[key] for key in matches]
+
+
+def _structure_hint(name: str) -> Optional[Recipe]:
+    """The recipe that fits a material name better than noise does.
+
+    A material called "BrickWall" built with noise is white smoke: the name
+    says what the material is, and the catalogue knows the pattern for it.
+    """
+    if not name:
+        return None
+    matches = match_recipes(name, limit=1)
+    if not matches:
+        return None
+    recipe = matches[0][0]
+    if recipe.spec.pattern == "noise":
+        return None  # noise is the right answer for this one
+    return recipe
+
+
+def _describe(spec: ProcSpec) -> str:
+    """The report of what was built, in one line.
+
+    The model reads this line: it has to be able to see that its parameters
+    arrived, or it will happily believe that it set the colours.
+    """
+    text = (
+        f"(pattern={spec.pattern}, scale={spec.scale:g}, "
+        f"roughness={spec.roughness:g}, bump={spec.bump_strength:g})"
+    )
+    hint = _structure_hint(spec.name)
+    if hint is not None:
+        text += (
+            f" Note: '{spec.name}' sounds like '{hint.name}' - that recipe uses "
+            f"pattern={hint.spec.pattern}, which is what a surface needs. Noise "
+            f"alone reads as clouds."
+        )
+    return text
+
+
+def _install(material) -> str:
+    """Put the new material on the active object; return its name or "".
+
+    A material the user cannot see is a material that did not happen: the
+    model says "the material is ready" and the object still wears the old
+    one. The builder therefore installs it right away, the same way the
+    "PBR from folder" button does.
+    """
+    obj = getattr(bpy.context, "active_object", None)
+    if obj is None:
+        return ""
+    return materials.assign_material(obj, material)
+
+
+@tools.tool(
+    "procedural.find",
+    "Find a procedural recipe by description",
+    "Find the procedural recipes that match a description: the words of the "
+    "request are matched against the recipe keywords and the closest recipes "
+    "come with their pattern. Use it when the user names a material that you "
+    "are not sure about - do not guess the recipe name.",
+    params=("query",),
+)
+def find_tool(query=None, **kwargs) -> str:
+    """Tool entry point: find the recipes that match the user's words."""
+    text = str(query or "")
+    matches = match_recipes(text, limit=4)
+    if not matches:
+        return (
+            f"Nothing matches '{text}'. The known recipes are: "
+            f"{', '.join(sorted(RECIPES))}."
+        )
+    lines = [f"Recipes that match '{text}':"]
+    for recipe, _score in matches:
+        spec = recipe.spec
+        lines.append(
+            f"- {recipe.name}: {recipe.description} "
+            f"[pattern={spec.pattern}, scale={spec.scale:g}, "
+            f"roughness={spec.roughness:g}, bump={spec.bump_strength:g}]"
+        )
     return "\n".join(lines)
 
 
@@ -468,34 +693,86 @@ def list_tool(**kwargs) -> str:
     "procedural.build",
     "Build a procedural material",
     "Build a procedural material from a recipe or from explicit parameters: "
-    "the pattern, the scale, the two colours, the roughness and the bump. The "
-    "graph is built by the add-on, so it always comes out valid.",
-    params=("recipe", "name", "color_a", "color_b", "scale", "roughness",
-            "metallic", "bump_strength"),
+    "the pattern (noise/voronoi/wave/checker/brick), the scale, the two or three "
+    "colours, the roughness and the bump. The graph is built by the add-on, so "
+    "it always comes out valid. For the brick pattern color_a is the brick, "
+    "color_b is the mortar and color_mid is the second brick tone. A recipe can "
+    "also be given as a plain description: it is matched against the keywords.",
+    params=("recipe", "query", "name", "pattern", "color_a", "color_b", "color_mid",
+            "scale", "detail", "distortion", "roughness", "roughness_variation",
+            "metallic", "bump_strength", "mortar_size", "brick_width",
+            "row_height"),
 )
 def build_tool(
-    recipe=None, name="", color_a=None, color_b=None, scale=None,
-    roughness=None, metallic=None, bump_strength=None, **kwargs
+    recipe=None, query=None, name="", pattern=None, color_a=None, color_b=None,
+    color_mid=None, scale=None, detail=None, distortion=None, roughness=None,
+    roughness_variation=None, metallic=None, bump_strength=None,
+    mortar_size=None, brick_width=None, row_height=None, **kwargs
 ) -> str:
     """Tool entry point: build a procedural material."""
     overrides = {
+        "pattern": pattern,
         "color_a": color_a,
         "color_b": color_b,
+        "color_mid": color_mid,
         "scale": scale,
+        "detail": detail,
+        "distortion": distortion,
         "roughness": roughness,
+        "roughness_variation": roughness_variation,
         "metallic": metallic,
         "bump_strength": bump_strength,
+        "mortar_size": mortar_size,
+        "brick_width": brick_width,
+        "row_height": row_height,
     }
     overrides = {k: v for k, v in overrides.items() if v is not None}
+
+    if not recipe and query:
+        # The model passed a description instead of a recipe name: the
+        # keywords know better than the model's guess.
+        matches = match_recipes(str(query), limit=1)
+        if matches:
+            recipe = matches[0][0].name
 
     if recipe:
         material = build_from_recipe(str(recipe), str(name or ""), **overrides)
         if material is None:
-            known = ", ".join(sorted(RECIPES))
-            return f"There is no recipe called '{recipe}'. Known ones: {known}."
-        return (
+            # The model may have used its own word for the material ("bricks",
+            # "кирпич"). The keywords know it, the name of the recipe does not.
+            matched = match_recipes(str(recipe), limit=1)
+            if matched:
+                recipe = matched[0][0].name
+                material = build_from_recipe(str(recipe), str(name or ""), **overrides)
+        if material is None:
+            close = closest_recipes(str(recipe))
+            hint = ", ".join(r.name for r in close) or ", ".join(sorted(RECIPES))
+            return (
+                f"There is no recipe called '{recipe}'. The closest ones are: "
+                f"{hint}. Call procedural.find with the description of the "
+                f"material, or build it from parameters (pattern=...) without a "
+                f"recipe."
+            )
+        spec = spec_for(str(recipe), str(name or ""), **overrides)
+        installed = _install(material)
+        text = (
             f"Built the procedural material '{material.name}' from the recipe "
-            f"'{recipe}'."
+            f"'{recipe}' {_describe(spec)}"
+        )
+        if installed:
+            text += f" and assigned it to '{installed}'."
+        return text
+
+    if not pattern:
+        # Building a default material would give grey noise: the user asked
+        # for a surface, not for fog. Say what is missing instead.
+        return (
+            "A procedural material needs a pattern: noise, voronoi, wave, "
+            "checker, gradient or brick - and the two colours, the roughness "
+            "and the bump. Call procedural.find with the description of the "
+            "material to get a ready-made recipe, or call again with "
+            "pattern=..., color_a=..., color_b=..., roughness=..., "
+            "bump_strength=..."
         )
 
     # No recipe: the model described the material directly, so the
@@ -504,4 +781,8 @@ def build_tool(
     for key, value in overrides.items():
         setattr(spec, key, value)
     material = build_material(spec)
-    return f"Built the procedural material '{material.name}'."
+    installed = _install(material)
+    text = f"Built the procedural material '{material.name}' {_describe(spec.normalized())}"
+    if installed:
+        text += f" and assigned it to '{installed}'."
+    return text

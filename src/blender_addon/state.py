@@ -199,6 +199,7 @@ class ChatState:
         self.last_error: Optional[str] = None
         self.pending_code: str = ""    # last ```python block, not run yet
         self.code_ran: bool = False    # True once "Run code" used that block
+        self._turn_code: str = ""      # code of an interrupted round
 
         # Re-sending the same turn after a skill request needs the original
         # prompt and transport settings kept around.
@@ -212,6 +213,9 @@ class ChatState:
         self.tool_history: List[dict] = []   # every call, including refusals
         self._ran_tools: List[dict] = []     # (key, report) of executed calls
         self._tool_calls = 0                 # tool calls this turn
+        self._tool_ok: Dict[str, int] = {}       # successful runs per tool id
+        self._tool_fail: Dict[str, int] = {}     # failed runs per tool id
+        self._tool_reports: Dict[str, str] = {}   # last report per tool id
         # A destructive tool waiting for the user's click. While it is set the
         # turn stays open: the model asked, the addon waits.
         self.pending_confirmation: Optional[dict] = None
@@ -349,7 +353,11 @@ class ChatState:
         self.tool_history = []
         self._ran_tools = []
         self._tool_calls = 0
+        self._tool_ok = {}
+        self._tool_fail = {}
+        self._tool_reports = {}
         self.pending_confirmation = None
+        self._turn_code = ""
 
         # Attach the recipes the user's words already point at, so the model
         # starts with the right instructions instead of asking for them.
@@ -423,18 +431,19 @@ class ChatState:
 
         self.skill_texts.append((skill.name, skill.body))
         self._fetched_skills += 1
-        set_last_display(i18n.T("msg.skill_loading", name=skill.name))
-        self.stream_buf = ""
-        self._write_command(
+        # The model asked for the instruction - it must see its own request
+        # and the fact that the instruction is now in the prompt.
+        self._remember_turn(self.stream_buf)
+        self.history.append(
             {
-                "type": "chat",
-                "config": self.last_config,
-                "messages": build_messages(
-                    self.history, self._prompt_with_context(), self.last_max_chars
-                ),
+                "role": "user",
+                "content": i18n.T("msg.skill_ready", name=skill.name),
             }
         )
-        ensure_timer()
+        # The code of this turn stays available, and the text of the turn
+        # stays in the chat.
+        self._keep_code(self.stream_buf)
+        self._ask_again(i18n.T("msg.skill_loading", name=skill.name))
         return True
 
     def _requested_tool(self):
@@ -447,6 +456,18 @@ class ChatState:
             if tools.get(name) is not None:
                 return name, params
         return None
+
+    def _remember_turn(self, text: str) -> None:
+        """Put the model's own reply into the conversation.
+
+        Without this the model is asked the same question again with no memory
+        of what it already said: it starts the same answer from scratch and
+        asks for the same tool again - the chat looks like it restarts itself.
+        """
+        said = (text or "").strip()
+        if not said:
+            return
+        self.history.append({"role": "assistant", "content": said})
 
     def _run_tool(self, name: str, params: dict) -> bool:
         """Run a tool on the main thread and ask the model again.
@@ -475,6 +496,7 @@ class ChatState:
                 # The model repeated the call without saying anything useful:
                 # show the report itself rather than an empty bubble.
                 self.stream_buf = i18n.T("msg.tool_done", report=previous)
+            set_last_display(self.stream_buf)
             self._finish_reply()
             return True
 
@@ -483,6 +505,21 @@ class ChatState:
                 f"Tool budget for this turn is used up ({tools.MAX_TOOL_CALLS}). "
                 f"Last result:\n{self.tool_results[-1]['report'] if self.tool_results else '-'}"
             )
+            set_last_display(self.stream_buf)
+            self._finish_reply()
+            return True
+
+        if self._tool_ok.get(name, 0) or self._tool_fail.get(name, 0):
+            # The tool already ran in this turn. A successful run must not be
+            # repeated - it would create a second copy of whatever the tool
+            # builds. A failed one may be retried once, with fixed parameters;
+            # a second failure is the end of the road.
+            report = self._tool_reports.get(name, "")
+            said = tools.strip_requests(self.stream_buf).strip()
+            self.stream_buf = (
+                f"{said}\n\n{report}".strip() if said else report
+            ) or i18n.T("msg.tool_repeat", name=name)
+            set_last_display(self.stream_buf)
             self._finish_reply()
             return True
 
@@ -499,7 +536,12 @@ class ChatState:
                 # What is about to be destroyed, named out loud.
                 "preview": tools.preview_of(name, params),
             }
-            set_last_display(i18n.T("msg.tool_confirm", name=item.title))
+            # The model's own message stays in the chat; the confirmation gets
+            # its own bubble.
+            self._remember_turn(self.stream_buf)
+            self._keep_code(self.stream_buf)
+            add_display("assistant", i18n.T("msg.tool_confirm", name=item.title))
+            self.stream_buf = ""
             return True
         result = tools.execute(name, params)
         self.tool_results.append({"id": result.id, "report": result.report})
@@ -507,12 +549,29 @@ class ChatState:
         self._ran_tools.append(
             {
                 "key": (name, tuple(sorted((params or {}).items()))),
+                "id": name,
                 "report": result.report,
             }
         )
+        self._tool_ok[name] = self._tool_ok.get(name, 0) + (1 if result.ok else 0)
+        self._tool_fail[name] = self._tool_fail.get(name, 0) + (0 if result.ok else 1)
+        self._tool_reports[name] = result.report
 
-        set_last_display(i18n.T("msg.tool_running", name=name))
-        self._ask_again()
+        # The model must see what it said and what the tool answered, or it
+        # starts the same answer from scratch and asks for the tool again.
+        self._remember_turn(self.stream_buf)
+        self.history.append(
+            {
+                "role": "user",
+                "content": i18n.T("msg.tool_result", name=name, report=result.report),
+            }
+        )
+        # The code of this turn stays available, and so does the text of the
+        # turn: only the *next* round gets a new bubble.
+        self._keep_code(self.stream_buf)
+
+        add_display("result", result.report)
+        self._ask_again(i18n.T("msg.tool_running", name=name))
         return True
 
     def _tool_report(self, name: str, params: dict):
@@ -523,9 +582,29 @@ class ChatState:
                 return call["report"]
         return None
 
-    def _ask_again(self) -> None:
-        """Re-send the turn with everything gathered so far attached."""
+    def _keep_code(self, text: str) -> None:
+        """Remember the code of a turn that is about to be interrupted.
+
+        The model often writes the script *before* it calls a tool, and the
+        call sends the turn into another round. The script must not be lost:
+        it is what the "Run code" button offers.
+        """
+        code = extract_last_code(text or "")
+        if code:
+            self._turn_code = code
+            self.pending_code = code
+            self.code_ran = False
+
+    def _ask_again(self, status: str = "") -> None:
+        """Re-send the turn with everything gathered so far attached.
+
+        A new bubble is opened for the next round: the messages of the
+        previous rounds stay in the chat. A round trip is not a reason to
+        erase what the model wrote - the user still wants to read it and to
+        run the code from it.
+        """
         self.stream_buf = ""
+        add_display("assistant", status)
         self._write_command(
             {
                 "type": "chat",
@@ -552,6 +631,7 @@ class ChatState:
         if pending is None:
             return None
         self.pending_confirmation = None
+        self._remember_turn(self.stream_buf)
         result = tools.execute(pending["id"], pending.get("params"))
         self.tool_results.append({"id": result.id, "report": result.report})
         self._record_tool(
@@ -563,7 +643,23 @@ class ChatState:
                     pending["id"],
                     tuple(sorted((pending.get("params") or {}).items())),
                 ),
+                "id": pending["id"],
                 "report": result.report,
+            }
+        )
+        self._tool_ok[pending["id"]] = self._tool_ok.get(pending["id"], 0) + (
+            1 if result.ok else 0
+        )
+        self._tool_fail[pending["id"]] = self._tool_fail.get(pending["id"], 0) + (
+            0 if result.ok else 1
+        )
+        self._tool_reports[pending["id"]] = result.report
+        self.history.append(
+            {
+                "role": "user",
+                "content": i18n.T(
+                    "msg.tool_result", name=pending["id"], report=result.report
+                ),
             }
         )
         return {"id": result.id, "report": result.report, "ok": result.ok}
@@ -574,9 +670,16 @@ class ChatState:
         if pending is None:
             return None
         self.pending_confirmation = None
+        self._remember_turn(self.stream_buf)
         report = i18n.T("msg.tool_declined", name=pending["title"])
         self.tool_results.append({"id": pending["id"], "report": report})
         self._record_tool(pending["id"], pending.get("params", {}), report, False)
+        self.history.append(
+            {
+                "role": "user",
+                "content": i18n.T("msg.tool_result", name=pending["id"], report=report),
+            }
+        )
         return {"id": pending["id"], "report": report, "ok": False}
 
     def _write_command(self, command: dict) -> None:
@@ -662,8 +765,14 @@ class ChatState:
         text = tools.strip_requests(skills.strip_skill_requests(self.stream_buf))
         if text.strip():
             self.history.append({"role": "assistant", "content": text})
-            self.pending_code = extract_last_code(text)
-            self.code_ran = False
+            # The code of the last round wins; if the last round had none, the
+            # code from an interrupted round is still on offer.
+            code = extract_last_code(text)
+            if not code:
+                code = self._turn_code
+            self.pending_code = code
+            if code:
+                self.code_ran = False
             if text != self.stream_buf:
                 set_last_display(text)
         else:
@@ -696,6 +805,7 @@ class ChatState:
         self.last_error = None
         self.pending_code = ""
         self.code_ran = False
+        self._turn_code = ""
         self.system_prompt = ""
         self.last_config = None
         self.skill_texts = []
@@ -704,6 +814,9 @@ class ChatState:
         self.tool_results = []
         self._ran_tools = []
         self._tool_calls = 0
+        self._tool_ok = {}
+        self._tool_fail = {}
+        self._tool_reports = {}
         self.pending_confirmation = None
 
 

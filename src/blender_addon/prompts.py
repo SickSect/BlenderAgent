@@ -43,6 +43,9 @@ SYSTEM_PROMPT_RU = """\
   ```
   Инструмент выполнит действие в сцене сам и вернёт тебе отчёт — это быстрее и
   надёжнее, чем писать bpy-код. В этом случае кода не пиши.
+- Сообщения, начинающиеся с «[Инструмент …]» или «[Инструкция …]», — это отчёты
+  о уже сделанном, а не слова пользователя. Учитывай их и продолжай работу: не
+  повторяй уже выполненный вызов и не начинай ответ заново.
 - Выполняется только python-блок; текстовые рекомендации сами по себе не
   выполняются, поэтому важные действия кодом всегда выноси в код-блок.
 - Если код необратимо меняет сцену (удаляет объекты, сбрасывает настройки,
@@ -96,6 +99,10 @@ Working principles:
   The tool performs the action in the scene itself and hands you back a
   report — faster and more reliable than writing bpy code. Do not write
   code in that case.
+- Messages that start with "[Tool …]" or "[Skill …]" are reports about what
+  has already been done, not words from the user. Take them into account and
+  carry on: do not repeat a call that already ran, and do not start your
+  answer from scratch.
 - Only the python block is executed; textual recommendations do not run by
   themselves, so always put important actions into a code block.
 - If the code irreversibly changes the scene (deletes objects, resets

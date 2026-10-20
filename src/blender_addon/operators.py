@@ -35,6 +35,7 @@ from . import (
 
 _POPUP_WIDTH = 480
 _CODE_TEXT_NAME = "AI Assistant Code"
+_HISTORY_TEXT_NAME = "AI Assistant History"
 
 
 def _system_prompt(context) -> str:
@@ -338,7 +339,66 @@ class GAA_OT_code_to_text(bpy.types.Operator):
         )
         text.clear()
         text.write(state.get_state().pending_code)
+        # Show it right away: a button that saves something into a corner of
+        # the file is a button the user cannot find again.
+        _show_text(context, text)
         self.report({"INFO"}, i18n.T("msg.code_saved", name=text.name))
+        return {"FINISHED"}
+
+
+class GAA_OT_history_to_text(bpy.types.Operator):
+    """Сохранить переписку в Text Editor"""
+
+    bl_idname = "gaa.history_to_text"
+    bl_label = "Переписка в Text Editor"
+
+    @classmethod
+    def poll(cls, context):
+        return bool(state.get_state().history) or bool(
+            context.window_manager.gaa_messages
+        )
+
+    def execute(self, context):
+        """Write the whole conversation into a text datablock.
+
+        The chat bubbles are what the user sees; the model-facing history is
+        what the model was told. Both go into the file, because "what did the
+        assistant actually say and what did it get back" is the question that
+        matters when a material comes out wrong.
+        """
+        chat = state.get_state()
+        text = bpy.data.texts.get(_HISTORY_TEXT_NAME) or bpy.data.texts.new(
+            _HISTORY_TEXT_NAME
+        )
+        text.clear()
+
+        lines = ["=== the model-facing conversation ===", ""]
+        for message in chat.history:
+            role = message.get("role", "?")
+            body = (message.get("content") or "").strip()
+            lines.append(f"--- {role} ---")
+            lines.append(body)
+            lines.append("")
+
+        lines.append("=== the chat bubbles ===")
+        lines.append("")
+        for item in context.window_manager.gaa_messages:
+            lines.append(f"--- {item.role} ---")
+            lines.append((item.body or "").strip())
+            lines.append("")
+
+        if chat.tool_history:
+            lines.append("=== the tool calls ===")
+            lines.append("")
+            for call in chat.tool_history:
+                lines.append(f"--- {call['id']} ({call.get('params')}) ---")
+                lines.append(str(call.get("report", "")))
+                lines.append("")
+
+        text.write("\n".join(lines))
+        # Show it right away - the point of the button is to look at it.
+        _show_text(context, text)
+        self.report({"INFO"}, i18n.T("msg.history_saved", name=text.name))
         return {"FINISHED"}
 
 
@@ -350,7 +410,7 @@ def _find_screen(context):
     return screen
 
 
-def _find_area(context, target_type: str):
+def _find_area(context, target_type: str, skip_types=()):
     """Return an ``Area`` able to host an editor of ``target_type``.
 
     Blender's UI is a tree: ``Screen`` → ``Area`` → ``Region`` → ``Space``.
@@ -361,6 +421,10 @@ def _find_area(context, target_type: str):
     already hosts it, or repurpose another area by flipping its ``type``. We
     never repurpose the area the button was clicked from — switching it would
     replace the very sidebar the chat is drawn in.
+
+    ``skip_types`` keeps a certain kind of area from being repurposed: a Text
+    Editor should not replace the 3D Viewport just because it is the biggest
+    one.
     """
     screen = _find_screen(context)
     if screen is None:
@@ -372,7 +436,12 @@ def _find_area(context, target_type: str):
     # NOTE: bpy structs hand out a fresh Python wrapper on every access, so
     # ``area is not origin`` would always be True. ``!=`` compares the actual
     # Blender pointers, which is what we mean here.
-    candidates = [area for area in screen.areas if area != origin]
+    candidates = [
+        area for area in screen.areas
+        if area != origin and area.type not in skip_types
+    ]
+    if not candidates:
+        candidates = [area for area in screen.areas if area != origin]
     if not candidates:
         candidates = list(screen.areas)
     if not candidates:
@@ -380,6 +449,19 @@ def _find_area(context, target_type: str):
     area = max(candidates, key=lambda a: a.width * a.height)
     area.type = target_type
     return area
+
+
+def _show_text(context, text):
+    """Show *text* in a Text Editor area, so the user sees where it went.
+
+    Returns False when there is no area for it - the caller then tells the
+    user the name of the text datablock, which is enough to find it.
+    """
+    area = _find_area(context, "TEXT_EDITOR", skip_types=("VIEW_3D",))
+    if area is None or area.spaces.active is None:
+        return False
+    area.spaces.active.text = text
+    return True
 
 
 def _active_object_material(context):
@@ -516,7 +598,10 @@ class GAA_OT_pbr_from_folder(bpy.types.Operator):
     def invoke(self, context, event):
         # Opens the file browser asynchronously: it runs execute() once the user
         # confirms, so nothing below happens on the first click.
-        return context.window_manager.fileselect_add(self)
+        # ``fileselect_add`` returns None, so the set has to be spelled out -
+        # an operator that returns None is an error in Blender's eyes.
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
 
     def execute(self, context):
         if not self.filepath:
@@ -796,7 +881,10 @@ class GAA_OT_import_textures(bpy.types.Operator):
     filepath: StringProperty(subtype="DIR_PATH")
 
     def invoke(self, context, event):
-        return context.window_manager.fileselect_add(self)
+        # ``fileselect_add`` returns None; the operator has to return the set
+        # itself, or Blender refuses the call.
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
 
     def execute(self, context):
         if not self.filepath:
@@ -1425,6 +1513,7 @@ _classes = (
     GAA_OT_chat_window,
     GAA_OT_run_code,
     GAA_OT_code_to_text,
+    GAA_OT_history_to_text,
     GAA_OT_open_shader_editor,
     GAA_OT_open_image_editor,
     GAA_OT_use_preset,

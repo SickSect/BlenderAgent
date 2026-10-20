@@ -120,7 +120,7 @@ the 3D Viewport sidebar (`N` panel) with a chat that knows your current scene.
 ### Build & install
 
 ```bash
-python tools/build_addon.py          # -> dist/asset_assistant-0.5.0.zip
+python tools/build_addon.py          # -> dist/asset_assistant-0.5.5.zip
 ```
 
 Blender → *Edit → Preferences → Add-ons → Install from Disk*, pick the zip,
@@ -428,6 +428,11 @@ executes every code sample the assistant can be handed:
 ```bash
 blender --background --factory-startup --python tests/run_skills_check.py
 ```
+
+The UI has its own check: the panel is only drawn in a window, so a wrong icon
+or a typo in an operator id stays invisible to every other test — and then the
+whole chat panel dies on the first redraw. `tests/run_ui_check.py` compares the
+icons and the operator ids in the UI with what the running Blender offers.
 
 The same idea for tools, for the scene snapshot and for the material doctor —
 all of them run the real code on the real Blender:

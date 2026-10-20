@@ -132,6 +132,11 @@ def draw_chat(
             if item.body.strip():
                 detail = layout.box()
                 _draw_wrapped(detail, item.body, wrap_width)
+        # The whole conversation - what the model was told and what it said -
+        # in one text file, for looking into a result that came out wrong.
+        row = layout.row(align=True)
+        row.scale_y = 0.85
+        row.operator("gaa.history_to_text", icon="TEXT")
     else:
         box = layout.box()
         box.label(text=i18n.T("history.empty_1"), icon="INFO")
@@ -246,7 +251,7 @@ def draw_chat(
             text=i18n.T("uv.own_seams"),
         )
     row = box.row(align=True)
-    row.operator("gaa.unwrap_uv", icon="MOD_EXTRUDE")
+    row.operator("gaa.unwrap_uv", icon="GROUP_UVS")
     row.operator("gaa.match_density", icon="FULLSCREEN_ENTER")
     row.operator("gaa.check_uv", icon="CHECKMARK")
     row = box.row(align=True)

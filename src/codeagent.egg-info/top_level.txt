@@ -1,2 +1,5 @@
 __init__
+asset_core
+blender_addon
 codeagent
+gui

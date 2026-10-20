@@ -45,6 +45,28 @@ _REQUEST_LINE_RE = re.compile(
 # so the same text protocol works with those models too.
 _NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9_.\-]*\Z")
 
+# ```python\n...\n``` - code the user may want to run. A JSON object inside a
+# code block is NOT a tool call: models write dictionaries in code all the
+# time, and reading them as calls would run tools nobody asked for.
+_CODE_FENCE_RE = re.compile(r"```([A-Za-z0-9_+-]*)[ \t]*\r?\n(.*?)```", re.DOTALL)
+_CODE_LANGS = ("python", "py", "bpy", "text")
+
+
+def _without_code(text: str) -> str:
+    """The text with python/text code blocks taken out.
+
+    Tool and json blocks stay: they are the places where a call may live.
+    """
+    out = []
+    position = 0
+    for match in _CODE_FENCE_RE.finditer(text or ""):
+        out.append(text[position:match.start()])
+        if match.group(1).lower() not in _CODE_LANGS:
+            out.append(match.group(0))  # tool and json blocks stay
+        position = match.end()
+    out.append(text[position:])
+    return "".join(out)
+
 
 def _json_objects(text: str) -> List[Dict]:
     """Every top-level JSON object in *text*.
@@ -175,6 +197,50 @@ def catalog() -> str:
     return "\n".join(lines)
 
 
+def _json_candidates(text: str) -> List[str]:
+    """The ways *text* might be read as JSON.
+
+    Models write the parameters by hand, and their JSON is often a little
+    broken: a trailing comma, a Python tuple instead of a list, single quotes.
+    Every repair below produces valid JSON, so trying them in order is safe.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    out = [text]
+    no_commas = re.sub(r",\s*([}\]])", r"\1", text)
+    out.append(no_commas)
+    # (1, 12) is a Python tuple; in JSON it is [1, 12].
+    out.append(
+        re.sub(r",\s*([}\]])", r"\1", no_commas.replace("(", "[").replace(")", "]"))
+    )
+    if '"' not in text:
+        out.append(no_commas.replace("'", '"'))
+    return out
+
+
+def _json_payload(text: str) -> Dict:
+    """The parameters of a tool call, as a dict.
+
+    Models write the parameters in many ways: on one line, across several
+    lines, with a trailing comma, or wrapped in a sentence. A plain
+    ``json.loads`` fails on most of that, and the difference matters: without
+    the parameters the tool would build a default material while the model
+    believes it set the colours.
+    """
+    for candidate in _json_candidates(text):
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    for candidate in _json_candidates(text):
+        for data in _json_objects(candidate):
+            return data
+    return {}
+
+
 def parse_request(text: str) -> List[Tuple[str, Dict]]:
     """Tool calls requested in *text*, in order, without duplicates.
 
@@ -207,14 +273,7 @@ def parse_request(text: str) -> List[Tuple[str, Dict]]:
         if not _NAME_RE.match(name):
             return
         rest = match.group(2).strip()
-        payload: Dict = {}
-        if rest:
-            try:
-                parsed = json.loads(rest)
-            except (ValueError, TypeError):
-                parsed = None
-            if isinstance(parsed, dict):
-                payload = parsed
+        payload: Dict = _json_payload(rest)
         for existing, _ in calls:
             if existing == name:
                 return
@@ -224,7 +283,7 @@ def parse_request(text: str) -> List[Tuple[str, Dict]]:
         remember(block)
     for line in _REQUEST_LINE_RE.findall(text or ""):
         remember(line)
-    for data in _json_objects(text or ""):
+    for data in _json_objects(_without_code(text)):
         name = str(data.get("name", "")).strip().lower()
         if not _NAME_RE.match(name):
             continue
