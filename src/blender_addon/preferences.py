@@ -46,20 +46,42 @@ class GAA_Preferences(bpy.types.AddonPreferences):
     )
 
     ollama_host: StringProperty(
-        name="Адрес Ollama / Ollama host", default="http://localhost:11434"
+        name="Адрес Ollama / Ollama host",
+        description=(
+            "Корень адреса Ollama, без /api — аддон сам допишет /api/chat. "
+            "Обычно http://localhost:11434 / The root of the Ollama address, "
+            "without /api - the add-on appends /api/chat itself"
+        ),
+        default="http://localhost:11434",
     )
     ollama_model: StringProperty(
         name="Модель Ollama / Ollama model", default="qwen2.5-coder:7b"
     )
 
     api_base_url: StringProperty(
-        name="Base URL", default="https://api.openai.com/v1"
+        name="Base URL",
+        description=(
+            "Базовый URL OpenAI-совместимого API - с /v1, но БЕЗ "
+            "/chat/completions (его аддон дописывает). Примеры: "
+            "https://api.openai.com/v1, https://openrouter.ai/api/v1, "
+            "https://api.groq.com/openai/v1, http://localhost:1234/v1 "
+            "(LM Studio). В поле «Модель» - точное имя модели из списка "
+            "провайдера / The base URL of an OpenAI-compatible API - with /v1, "
+            "but WITHOUT /chat/completions (the add-on appends it)"
+        ),
+        default="https://api.openai.com/v1",
     )
     api_key: StringProperty(
         name="API-ключ / API key", subtype="PASSWORD", default=""
     )
     api_model: StringProperty(
-        name="Модель API / API model", default="gpt-4o-mini"
+        name="Модель API / API model",
+        description=(
+            "Точное имя модели из списка провайдера: gpt-4o-mini, "
+            "deepseek-chat, qwen/qwen2.5-coder-32b-instruct (OpenRouter) / "
+            "The exact model name from the provider's list"
+        ),
+        default="gpt-4o-mini",
     )
 
     temperature: FloatProperty(
