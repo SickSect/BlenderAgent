@@ -340,10 +340,10 @@ def _keyword_re(keyword: str):
 def keyword_score(text: str, keyword: str) -> int:
     """How strongly *keyword* is present in *text* (0 = absent).
 
-    A whole word with word boundaries scores the length of the keyword; a
-    match by the stem alone scores one less, so an exact match always wins
-    over a lucky prefix - but a stem match is still evidence enough to attach
-    a skill.
+    A whole word with word boundaries scores the length of the keyword. A
+    match by the stem alone scores the length of the *stem* (plus a little):
+    the length of the keyword would let "металл с царапинами" beat the exact
+    "чистый металл", which is nonsense.
     """
     if not text or not keyword or len(keyword) < 2:
         return 0
@@ -357,7 +357,7 @@ def keyword_score(text: str, keyword: str) -> int:
     if pattern is None:
         pattern = re.compile(r"(?<!\w)" + re.escape(stem), re.IGNORECASE)
         _KEYWORD_PATTERNS[f"~{stem}"] = pattern
-    return len(keyword) - 1 if pattern.search(text) else 0
+    return len(stem) + 2 if pattern.search(text) else 0
 
 
 def keyword_in(text: str, keyword: str) -> bool:

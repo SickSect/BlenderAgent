@@ -45,6 +45,45 @@ def load_package():
     return module
 
 
+def part_correction(state, presets):
+    print("\n== the user's words win over the model's guess")
+    chat = state.get_state()
+    chat.turn_user_text = "сделай процедурный материал поцарапанного металла"
+
+    wrong = chat._correct_preset({"preset": "metal_worn"})
+    check(
+        wrong.get("preset") == "metal_scratched",
+        f"the guess is corrected ({wrong.get('preset')})",
+    )
+    right = chat._correct_preset({"preset": "metal_scratched"})
+    check(
+        right.get("preset") == "metal_scratched",
+        "a correct guess is left alone",
+    )
+    chat.turn_user_text = "сделай ржавый металл"
+    check(
+        chat._correct_preset({"preset": "metal_worn"}).get("preset") == "rusty_metal",
+        "another request corrects to another preset",
+    )
+    chat.turn_user_text = ""
+
+
+def part_matching(presets):
+    print("\n== the matching")
+    for text, expected in (
+        ("поцарапанного металла", "metal_scratched"),
+        ("потёртый металл", "metal_worn"),
+        ("ржавый металл", "rusty_metal"),
+        ("чистый металл", "metal_clean"),
+    ):
+        found = presets.match(text)
+        names = [preset.name for preset, _score in found]
+        check(
+            names and names[0] == expected,
+            f"'{text}' finds {expected} ({names})",
+        )
+
+
 def main():
     package = load_package()
     package.register()
@@ -117,6 +156,10 @@ def main():
 
         print("\n== the tool")
         check(tools.get("procedural.preset") is not None, "procedural.preset is registered")
+        check(
+            tools.get("material.preset") is not None,
+            "the alias 'material.preset' answers too",
+        )
         result = tools.execute(
             "procedural.preset", {"preset": found[0].name, "name": "ToolPreset"}
         )
@@ -131,6 +174,18 @@ def main():
             found[0].name in result.report,
             "the answer lists the presets",
         )
+        # The words of the request pick the preset.
+        result = tools.execute(
+            "procedural.preset", {"query": "поцарапанного металла"}
+        )
+        check(result.ok, "the tool takes a query")
+        check(
+            "metal_scratched" in result.report,
+            f"the query found the preset ({result.report[:80]})",
+        )
+
+        part_matching(presets)
+        part_correction(importlib.import_module("blender_addon.state"), presets)
     finally:
         package.unregister()
 

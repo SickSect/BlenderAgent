@@ -43,6 +43,10 @@ SYSTEM_PROMPT_RU = """\
   ```
   Инструмент выполнит действие в сцене сам и вернёт тебе отчёт — это быстрее и
   надёжнее, чем писать bpy-код. В этом случае кода не пиши.
+- Если просят МАТЕРИАЛ, вызови инструмент: `procedural.find` со словами
+  запроса, потом `procedural.build` или `procedural.preset`. Материал, собранный
+  тобой вручную, выйдет плоским Principled BSDF без процедурности — это не то,
+  о чём человек просил. Код на bpy пиши только если инструментов не хватает.
 - Если просят МАТЕРИАЛ, сначала вызови `procedural.find` со словами запроса:
   рецепты и их паттерны живут в коде, а не в твоей памяти. Не подставляй
   рецепт наугад и не пиши граф нод руками.
@@ -102,6 +106,11 @@ Working principles:
   The tool performs the action in the scene itself and hands you back a
   report — faster and more reliable than writing bpy code. Do not write
   code in that case.
+- If the user asks for a MATERIAL, call a tool: `procedural.find` with the
+  words of the request, then `procedural.build` or `procedural.preset`. A
+  material you assemble by hand comes out as a flat Principled BSDF with no
+  procedural detail - that is not what the person asked for. Write bpy code
+  only when the tools do not cover it.
 - If the user asks for a MATERIAL, call `procedural.find` with the words of
   the request first: the recipes and their patterns live in the code, not in
   your memory. Never guess a recipe and never build a node graph by hand.

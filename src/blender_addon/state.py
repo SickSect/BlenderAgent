@@ -544,6 +544,15 @@ class ChatState:
         if item is None:
             return False
 
+        # The user's words know the preset better than the model's guess: a
+        # small model names one instead of letting the add-on match.
+        corrected = None
+        if name in ("procedural.preset", "material.preset"):
+            fixed = self._correct_preset(params)
+            if fixed.get("preset") != params.get("preset"):
+                corrected = (params.get("preset"), fixed.get("preset"))
+                params = fixed
+
         # A model that does not notice the result may ask for the same tool
         # again. Running it twice would duplicate whatever it created, so the
         # second request is not executed: the turn ends with what the model
@@ -608,6 +617,12 @@ class ChatState:
         # The report is checked before it is stored: the note about a wrong
         # recipe has to reach the model *and* the user.
         report = self._warn_on_wrong_recipe(name, params, result.report)
+        if corrected:
+            asked, used = corrected
+            report += (
+                f" Note: the request matches the preset '{used}', not '{asked}' - "
+                f"that one was built."
+            )
         if self._tool_alias:
             # The model asked for a name that does not exist; the nearest one
             # was used. Say so, or the model will keep using the wrong name.
@@ -644,6 +659,29 @@ class ChatState:
         self._ask_again(i18n.T("msg.tool_running", name=name))
         return True
 
+    def _correct_preset(self, params: dict) -> dict:
+        """The user's words know the preset better than the model's guess.
+
+        "Поцарапанного металла" came out as the worn preset: the model named
+        one instead of letting the add-on match the words. Building the wrong
+        material is worse than building the right one, so the words win.
+        """
+        text = self.turn_user_text
+        asked = str((params or {}).get("preset") or "")
+        if not text or not asked:
+            return params
+        try:
+            from . import presets
+
+            found = presets.match(text)
+        except Exception:  # noqa: BLE001 - a check must not break the turn
+            return params
+        if not found or found[0][0].name == asked:
+            return params
+        fixed = dict(params)
+        fixed["preset"] = found[0][0].name
+        return fixed
+
     def _warn_on_wrong_recipe(self, tool_id: str, params: dict, report: str) -> str:
         """Say it out loud when the material is not the one the user asked for.
 
@@ -653,11 +691,33 @@ class ChatState:
         The warning goes into the report, so the model can put it right in the
         next round.
         """
-        if tool_id != "procedural.build":
+        if tool_id not in ("procedural.build", "procedural.preset"):
             return report
-        recipe = str((params or {}).get("recipe") or "")
         text = self.turn_user_text
-        if not recipe or not text:
+        if not text:
+            return report
+
+        if tool_id == "procedural.preset":
+            # The model guessed the preset name: "поцарапанного металла" came
+            # out as the worn one. The words know better.
+            asked = str((params or {}).get("preset") or "")
+            if not asked:
+                return report
+            try:
+                from . import presets
+
+                found = presets.match(text)
+            except Exception:  # noqa: BLE001 - a check must not break the turn
+                return report
+            if not found or found[0][0].name == asked:
+                return report
+            return (
+                f"{report} Note: the request matches the preset "
+                f"'{found[0][0].name}', not '{asked}' - build that one instead."
+            )
+
+        recipe = str((params or {}).get("recipe") or "")
+        if not recipe:
             return report
         try:
             from . import procedural

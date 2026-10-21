@@ -690,23 +690,37 @@ def _default_name(recipe: str) -> str:
 
 @tools.tool(
     "procedural.find",
-    "Find a procedural recipe by description",
-    "Find the procedural recipes that match a description: the words of the "
-    "request are matched against the recipe keywords and the closest recipes "
-    "come with their pattern. Use it when the user names a material that you "
-    "are not sure about - do not guess the recipe name.",
+    "Find a procedural recipe or a preset",
+    "Find the procedural material that fits a description: the ready-made "
+    "recipes and the author's own hand-written presets (scratched metal, worn "
+    "metal, rusty metal...). Give the words of the request - the matching "
+    "happens here, not in your memory. The presets are the better looking "
+    "ones: prefer them.",
     params=("query",),
 )
 def find_tool(query=None, **kwargs) -> str:
-    """Tool entry point: find the recipes that match the user's words."""
+    """Tool entry point: find a recipe or a preset by the user's words."""
     text = str(query or "")
-    matches = match_recipes(text, limit=4)
-    if not matches:
-        return (
-            f"Nothing matches '{text}'. The known recipes are: "
-            f"{', '.join(sorted(RECIPES))}."
+    if not text:
+        return list_tool()
+    lines = [f"What matches '{text}':"]
+
+    # The author's own materials come first: they look better than any
+    # recipe, and the model should reach for them.
+    try:
+        from . import presets
+
+        found = presets.match(text)
+    except Exception:  # noqa: BLE001 - the presets are optional
+        found = []
+    for preset, _score in found:
+        words = ", ".join(presets.keywords_of(preset)[:4])
+        lines.append(
+            f"- {preset.name}: {preset.title} - THE AUTHOR'S OWN MATERIAL, it "
+            f"looks better than any recipe (words: {words})"
         )
-    lines = [f"Recipes that match '{text}':"]
+
+    matches = match_recipes(text, limit=3)
     for recipe, _score in matches:
         spec = recipe.spec
         lines.append(
@@ -714,6 +728,9 @@ def find_tool(query=None, **kwargs) -> str:
             f"[pattern={spec.pattern}, scale={spec.scale:g}, "
             f"roughness={spec.roughness:g}, bump={spec.bump_strength:g}]"
         )
+
+    if not matches and not found:
+        lines.append("Nothing matches. Ask for a description in other words.")
     return "\n".join(lines)
 
 
@@ -758,7 +775,21 @@ def build_tool(
 
     if not recipe and query:
         # The model passed a description instead of a recipe name: the
-        # keywords know better than the model's guess.
+        # keywords know better than the model's guess. The author's own
+        # materials are checked first - they look better.
+        try:
+            from . import presets
+
+            found = presets.match(str(query))
+        except Exception:  # noqa: BLE001 - the presets are optional
+            found = []
+        if found:
+            material, report = presets.build(
+                found[0][0].name, str(name or ""), params=None
+            )
+            if material is None:
+                return report
+            return report
         matches = match_recipes(str(query), limit=1)
         if matches:
             recipe = matches[0][0].name

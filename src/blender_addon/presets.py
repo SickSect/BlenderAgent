@@ -41,6 +41,31 @@ _BUILD_RE = re.compile(r"^def (build_\w+)\(", re.MULTILINE)
 # name the script gives the material.
 _INTERNAL = ("PLANE_SIZE", "MATERIAL_NAME", "PREVIEW_SHAPE")
 
+# The words that lead to a preset. The user says "поцарапанный металл" and
+# the model says "scratched metal" - the mapping to the preset name has to
+# happen in the code, not in the head of a small model.
+PRESET_KEYWORDS = {
+    "metal_clean": (
+        "clean metal", "brushed metal", "brushed steel", "smooth metal",
+        "чистый металл", "шлифованный металл", "сталь", "гладкий металл",
+    ),
+    "metal_scratched": (
+        "scratched metal", "scratches", "gouges", "scratched",
+        "поцарапанный металл", "поцарапанный", "царапины", "исцарапанный",
+        "металл с царапинами",
+    ),
+    "metal_worn": (
+        "worn metal", "scuffed metal", "worn", "edge wear", "dents",
+        "потёртый металл", "потёртый", "потрепанный", "затёртый",
+        "изношенный металл", "износ краёв", "вмятины",
+    ),
+    "rusty_metal": (
+        "rusty metal", "rust", "rusted", "corroded metal", "painted metal",
+        "ржавый металл", "ржавый", "ржавчина", "крашеный металл",
+        "окислившийся металл",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class Preset:
@@ -123,9 +148,51 @@ def get(name: str) -> Optional[Preset]:
 
 
 def short_list() -> str:
-    """The names of the presets, one line - for the system prompt."""
-    names = [preset.name for preset in all_presets()]
-    return ", ".join(names) if names else ""
+    """The presets with their words - for the system prompt.
+
+    The words matter: the user says "поцарапанный металл" and the model says
+    "scratched metal" - the mapping to the preset name has to happen in the
+    code, not in the head of a small model.
+    """
+    parts = []
+    for preset in all_presets():
+        words = ", ".join(keywords_of(preset)[:3])
+        parts.append(f"{preset.name} ({words})")
+    return ", ".join(parts)
+
+
+def keywords_of(preset: Preset) -> Tuple[str, ...]:
+    """The words that lead to this preset."""
+    return PRESET_KEYWORDS.get(preset.name, (preset.name.replace("_", " "),))
+
+
+def match(text: str) -> List[Tuple[Preset, int]]:
+    """The presets whose words appear in *text*, best first.
+
+    The same machinery the recipes use: the Russian cases are survived by the
+    stem of the keyword, so "поцарапанного металла" finds "поцарапанный".
+    """
+    from . import skills  # bpy-free, no cycle
+
+    lowered = skills.strip_generic((text or "").lower())
+    scored: List[Tuple[Preset, int]] = []
+    for preset in all_presets():
+        score = 0
+        for keyword in keywords_of(preset):
+            score += skills.keyword_score(lowered, keyword)
+        if score:
+            scored.append((preset, score))
+    scored.sort(key=lambda pair: (-pair[1], pair[0].name))
+    return scored
+
+
+def describe_all() -> str:
+    """The presets with their keywords - for the model."""
+    lines = []
+    for preset in all_presets():
+        words = ", ".join(keywords_of(preset)[:4])
+        lines.append(f"- {preset.name}: {preset.title} (words: {words})")
+    return "\n".join(lines)
 
 
 def catalog() -> str:
@@ -232,11 +299,21 @@ def build(
     "written by hand. Call this without a preset to get the list with the "
     "parameters of each. The presets are: "
     + (", ".join(preset.name for preset in all_presets()) or "none"),
-    params=("preset", "name", "params"),
+    params=("preset", "query", "name", "params"),
     aliases=("material.preset",),
 )
-def preset_tool(preset=None, name="", params=None, **kwargs) -> str:
+def preset_tool(preset=None, query=None, name="", params=None, **kwargs) -> str:
     """Tool entry point: build a preset material."""
+    if not preset and query:
+        # The user said "поцарапанный металл": the words decide which
+        # preset it is, not the model.
+        found = match(str(query))
+        if not found:
+            return (
+                f"Nothing matches '{query}'. The presets are: "
+                f"{', '.join(p.name for p in all_presets())}."
+            )
+        preset = found[0][0].name
     if not preset:
         catalogue = catalog()
         return (

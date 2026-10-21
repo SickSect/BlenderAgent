@@ -131,9 +131,10 @@ STRINGS = {
         "prompt.presets_header": (
             "## Авторские материалы (presets)\n"
             "Это готовые материалы, написанные вручную: {names}. Собери нужный "
-            "инструментом `procedural.preset` и подкрути его параметры. Граф, "
-            "написанный тобой с нуля, будет выглядеть хуже — не делай так, если "
-            "подходящий пресет уже есть."
+            "инструментом `procedural.preset`: либо назови пресет, либо передай "
+            "слова запроса в `query` — тогда подберёт сам аддон. Граф, написанный "
+            "тобой с нуля, будет выглядеть хуже — не делай так, если подходящий "
+            "пресет уже есть."
         ),
         "prompt.skills_header": (
             "## Инструкции по Blender (skills)\n"
@@ -542,7 +543,8 @@ STRINGS = {
         "prompt.presets_header": (
             "## The author's own materials (presets)\n"
             "These are hand-written materials: {names}. Build the right one with "
-            "the `procedural.preset` tool and turn its parameters. A graph you "
+            "the `procedural.preset` tool: name the preset, or pass the words "
+            "of the request as `query` and the add-on will pick it. A graph you "
             "write from scratch will look worse - do not do that when a preset "
             "fits."
         ),
