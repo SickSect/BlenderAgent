@@ -75,6 +75,12 @@ def part_matching(presets):
         ("потёртый металл", "metal_worn"),
         ("ржавый металл", "rusty_metal"),
         ("чистый металл", "metal_clean"),
+        ("дубовое дерево", "wood_oak"),
+        ("сосновый", "wood_light"),
+        ("тёмное дерево", "wood_dark"),
+        ("сухое выветренное дерево", "wood_dry"),
+        ("кора", "wood_dry_peeling_bark"),
+        ("чипборд", "wood_chipboard"),
     ):
         found = presets.match(text)
         names = [preset.name for preset, _score in found]
@@ -135,17 +141,26 @@ def main():
         print("\n== the parameters can be turned")
         preset = found[0] if found else None
         if preset is not None and preset.parameters:
-            key = preset.parameter_names()[0]
-            before = presets.build(preset.name, "ParamTest")
-            check(before[0] is not None, "the preset builds for the test")
-            after, report = presets.build(
-                preset.name, "ParamTest", {key: 999.0}
-            )
-            check(after is not None, f"a changed parameter still builds ({report[:70]})")
-            check(
-                key in report,
-                f"the report names the changed parameter ({report[-80:]})",
-            )
+            # A number parameter: the others can be colours or lists, and
+            # the type has to match (the tool refuses a mismatch).
+            key = None
+            for name in preset.parameter_names():
+                current = getattr(presets._load_module(preset), name, None)
+                if isinstance(current, (int, float)):
+                    key = name
+                    break
+            check(key is not None, f"{preset.name} has a number parameter")
+            if key is not None:
+                before = presets.build(preset.name, "ParamTest")
+                check(before[0] is not None, "the preset builds for the test")
+                after, report = presets.build(
+                    preset.name, "ParamTest", {key: 999.0}
+                )
+                check(after is not None, f"a changed parameter still builds ({report[:70]})")
+                check(
+                    key in report,
+                    f"the report names the changed parameter ({report[-80:]})",
+                )
 
             bad, message = presets.build(preset.name, "Bad", {"NO_SUCH_PARAM": 1})
             check(bad is None, "an unknown parameter is refused")
@@ -153,6 +168,20 @@ def main():
                 "not a parameter" in message,
                 f"the refusal explains itself ({message[:70]})",
             )
+
+            # A number where a colour belongs must be refused, not crash.
+            for name in preset.parameter_names():
+                current = getattr(presets._load_module(preset), name, None)
+                if isinstance(current, str):
+                    wrong, message = presets.build(
+                        preset.name, "Bad", {name: 999.0}
+                    )
+                    check(wrong is None, "a number for a colour is refused")
+                    check(
+                        "is a string" in message,
+                        f"the refusal explains itself ({message[:70]})",
+                    )
+                    break
 
         print("\n== the tool")
         check(tools.get("procedural.preset") is not None, "procedural.preset is registered")

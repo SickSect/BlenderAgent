@@ -64,6 +64,43 @@ PRESET_KEYWORDS = {
         "ржавый металл", "ржавый", "ржавчина", "крашеный металл",
         "окислившийся металл",
     ),
+    # The wood family: the words the user would actually type.
+    "wood_oak": (
+        "oak", "oak wood", "дуб", "дубовое дерево", "дубовый",
+    ),
+    "wood_light": (
+        "light wood", "pine", "ash", "pale wood",
+        "светлое дерево", "сосна", "сосновый", "ясень", "бледное дерево",
+    ),
+    "wood_dark": (
+        "dark wood", "walnut", "wenge",
+        "тёмное дерево", "темное дерево", "орех", "венге", "чёрное дерево",
+    ),
+    "wood_dry": (
+        "dry wood", "weathered wood", "bleached wood", "cracked wood",
+        "сухое дерево", "высохшее дерево", "выветренное дерево",
+        "выбеленное дерево", "потрескавшееся дерево",
+    ),
+    "wood_dry_peeling_bark": (
+        "peeling bark", "bark", "dry wood with bark",
+        "обдирающая кора", "кора", "кора отслаивается", "сухое дерево с корой",
+    ),
+    "wood_custom": (
+        "bark", "barked wood", "controllable wood", "дерево с корой",
+        "кора на дереве", "контролируемое дерево",
+    ),
+    "wood_chipboard": (
+        "chipboard", "dsp", "osb", "pressed wood",
+        "чипборд", "дсп", "осб", "прессованная плита",
+    ),
+    "wood_slice": (
+        "tree cross-section", "cross section", "growth rings", "log", "stump",
+        "срез дерева", "срез ствола", "годовые кольца", "ствол", "пень",
+    ),
+    "metal_custom": (
+        "tree cross-section", "cross section", "growth rings", "log", "stump",
+        "срез дерева", "срез ствола", "годовые кольца", "ствол", "пень",
+    ),
 }
 
 
@@ -243,11 +280,32 @@ def build(
     known = set(preset.parameter_names())
     applied: Dict[str, object] = {}
     unknown: List[str] = []
+    try:
+        module = _load_module(preset)
+    except Exception as exc:  # noqa: BLE001 - a broken preset must not kill the chat
+        return None, f"The preset '{preset.name}' does not load: {exc}"
     for key, value in (overrides or {}).items():
-        if key in known:
-            applied[key] = value
-        else:
+        if key not in known:
             unknown.append(key)
+            continue
+        current = getattr(module, key, None)
+        # The scripts expect the type they were written with: a colour is a
+        # string, a scale is a number. A number where a string belongs used to
+        # blow up inside the script with a cryptic error.
+        if isinstance(current, str) and not isinstance(value, str):
+            return None, (
+                f"'{key}' of '{preset.name}' is a string (like \"#rrggbb\"), "
+                f"not a number."
+            )
+        if isinstance(current, (int, float)) and not isinstance(value, (int, float)):
+            return None, (
+                f"'{key}' of '{preset.name}' is a number, not a {type(value).__name__}."
+            )
+        if isinstance(current, (list, tuple)) and not isinstance(value, (list, tuple)):
+            return None, (
+                f"'{key}' of '{preset.name}' is a list, not a {type(value).__name__}."
+            )
+        applied[key] = value
     if unknown:
         return None, (
             f"'{unknown[0]}' is not a parameter of '{preset.name}'. The "
@@ -255,7 +313,6 @@ def build(
         )
 
     try:
-        module = _load_module(preset)
         for key, value in applied.items():
             setattr(module, key, value)
         # The builder is called "build_material" in one script and
