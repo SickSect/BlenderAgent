@@ -49,9 +49,14 @@ def check_consistency(version: str) -> list:
         if numbers != version:
             problems.append(f"{INIT.name}: {numbers} != {version}")
     readme = README.read_text(encoding="utf-8")
-    for found in set(README_RE.findall(readme)):
-        if found != version:
-            problems.append(f"README.md: mentions {found}")
+    for line in readme.splitlines():
+        # Only the build command has to name the current version: the release
+        # instructions mention other versions on purpose.
+        if "tools/build_addon.py" not in line:
+            continue
+        found = README_RE.search(line)
+        if found and found.group(1) != version:
+            problems.append(f"README.md: the build command mentions {found.group(1)}")
     return problems
 
 
