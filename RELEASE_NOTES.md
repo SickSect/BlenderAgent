@@ -1,62 +1,75 @@
 # Asset Assistant 0.5.9
 
-The installable extension for Blender 4.2+.
+An AI assistant for game assets that lives inside Blender — and a set of
+deterministic tools that do the boring half of the pipeline.
 
 **Download:** `asset_assistant-0.5.9.zip` (below) → in Blender:
 *Edit → Preferences → Get Extensions → ▾ → Install from Disk*, pick the zip,
 enable **Asset Assistant**.
 
-**A model is required** — either a local one
+**A model is required for the chat half** — either a local one
 ([Ollama](https://ollama.com/download), `ollama pull qwen2.5-coder:7b`) or any
-OpenAI-compatible endpoint with an API key. The deterministic half of the
-add-on (the material doctor, UV tools, baking, packing, the export check) needs
-no model at all.
+OpenAI-compatible endpoint with an API key. The buttons — the doctor, the UV
+tools, baking, packing, the export — need no model at all.
 
-## What is in this release
+## The doctor
 
-**The chat is no longer a guessing game about the scene.** The model now sees
-what it said itself and what the tools answered, so it stops repeating itself:
-a request that needed three tools used to start the same answer three times.
+`AI → Material Doctor` reads the whole scene and reports what is broken and
+where: a normal map in `sRGB`, a normal map wired straight into Base Color, a
+texture file that is gone, a mesh with textures but no UV, absolute paths,
+unpacked textures, a shader the exporter cannot express, duplicate and unused
+materials, maps of different resolutions.
 
-**The panel survives.** An icon that does not exist in Blender 5.2 (`MOD_EXTRUDE`)
-killed the whole panel on the first redraw. Every icon and every operator id
-in the UI is now checked against the running Blender
-(`tests/run_ui_check.py`).
+Twelve checks. The safe ones are repaired for you; nothing is deleted. With a
+hundred objects in the scene, this is the difference between hunting for the
+misconfigured one and being told.
 
-**The bake is a pipeline, not a button.** One click bakes the procedural
-material, writes the maps to `<Name>_Bake/` next to the `.blend`, builds a
-plain PBR material from them and puts it on the object. The size, the sample
-count, the map set and the file naming (`_col` / `_nrm` / `_rgh` for the game
-pipelines) are settings right under the button. Baking used to take minutes
-because it rendered at the project atlas size; one object needs 1024.
+## The pipeline
 
-**Nothing is overwritten silently.** A folder with two files for one role
-(`Wood_albedo.png` and `Wood_col.png`) says so out loud. A destructive tool
-that was waiting for a confirmation dies with the turn, so it cannot run
-after you pressed Stop.
+- **PBR from folder** — a folder of maps becomes a material, assigned, with
+  the right colour spaces. A second run updates it instead of making
+  `Wood.001`.
+- **UV** — unwrap, even texel density, a shared atlas with padding, and a
+  **UV kit**: the layout as a PNG plus a manifest, to paint in Aseprite or
+  Krita and bring back, without the UVs ever being touched.
+- **Bake** — procedural material to textures (albedo, normal, roughness, AO),
+  written to a folder next to the `.blend`, with a plain material on the
+  object. The file names can follow the game convention (`_col`, `_nrm`,
+  `_rgh`).
+- **Textures** — pack into the `.blend`, relative paths, relink lost files, fix
+  colour spaces.
+- **Export** — GLB and FBX with the axes and modifiers the engines expect.
+  The readiness check runs first: the tool refuses to write a broken file.
+- **Presets** — 16 procedural recipes and 4 hand-written layered materials
+  (scratched metal, worn metal, rusty painted metal, clean brushed steel) to
+  start from.
 
-**The words are understood.** "сделай текстуру дерева" used to build bricks:
-the keyword `дерево` does not appear in `дерева`. The matching now survives
-the Russian cases, and the assistant is told when the material it built is not
-the one you asked for.
+## The agent
 
-**More tools, more skills:** 37 tools in total, 16 procedural recipes (brick,
-tile, cobble among them), 8 verified skills, and a textbook of 23 chapters in
-Russian.
+- Every request carries a **snapshot of the scene**, focused on what you are
+  looking at right now, plus a section of problems the model cannot see.
+- The model calls any of the **40 tools** by name and reads back what actually
+  happened. Destructive tools never run on their own — the chat shows a
+  Run / Cancel block.
+- **8 skills** carry the knowledge it should not improvise: the exact socket
+  names of Blender 4.x/5.x, colour spaces, PBR wiring, the procedural
+  recipes. They attach to your own words, and every code sample in them is
+  executed in Blender by a test.
+- When no tool fits, it writes the code; **Run code** executes it in the scene,
+  with Undo.
 
-## Known rough edge
+## Known limit
 
-On a small local model the assistant is not yet reliable at *choosing* a
-material recipe. The deterministic half of the add-on does not depend on that.
+A small local model does not invent beautiful procedural materials — and it
+should not: the presets are hand-written for that, and the model picks one and
+turns its numbers. The words of your request are matched against the
+keywords in the code, so "поцарапанный металл" finds the right material
+without the model's guess.
 
-## The changelog in short
-
-- the tool loop: the model sees its own turn and the tool reports, the
-  conversation is kept, the code block survives and collapses when it is run;
-- the procedural materials: the brick pattern, no silent fog, the recipes
-  live in the code, the knowledge in the skills, and the prompt stopped eating
-  80% of the context window;
-- the baking: the whole pipeline, the settings, the game file names;
-- the bugs found by reading the code: the collapsed-code flag, the confirmation
-  that survived a stop, the second bake that read its own result, the temp
-  folders that piled up.
+| | |
+|---|---|
+| Tools | 40 — each one a button, a model call, and a headless test |
+| Doctor checks | 12, 4 repaired automatically |
+| Skills | 8, with runnable code samples |
+| Headless checks | 16 scripts running the real code in the real Blender |
+| Requires | Blender 4.2+ (tested on 5.2 LTS) |
