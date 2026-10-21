@@ -416,6 +416,64 @@ def part_density_match(uv, image):
         )
 
 
+def part_density_keeps_the_layout(uv, image):
+    print("\n== the density button does not wreck the layout")
+    bpy.ops.mesh.primitive_cube_add()
+    cube = bpy.context.active_object
+    cube.name = "LayoutCube"
+    give_material(cube, image)
+
+    settings = uv.settings_from_scene()
+    settings.angle = 40.0
+    uv.unwrap_object(cube, settings)
+
+    # Two islands of different density, so the button has something to do.
+    uv_layer = cube.data.uv_layers[0]
+    for loop in cube.data.loops:
+        if loop.index == 0:
+            co = uv_layer.data[loop.index].uv
+            uv_layer.data[loop.index].uv = (co[0] * 0.4, co[1] * 0.4)
+
+    # Where is every island before? The orientation must survive.
+    islands_before = [
+        (island.uv_min, island.uv_max) for island in uv.analyze(cube).islands
+    ]
+
+    result = uv.match_density(cube, 64.0)
+    check(result.get("ok") is True, f"the density was matched ({result.get('error')})")
+    check(result.get("changed") is True, "the report says the UVs were changed")
+
+    # The UVs have to stay inside the texture space.
+    report = uv.analyze(cube)
+    u_min = min(i.uv_min[0] for i in report.islands)
+    u_max = max(i.uv_max[0] for i in report.islands)
+    v_min = min(i.uv_min[1] for i in report.islands)
+    v_max = max(i.uv_max[1] for i in report.islands)
+    check(
+        u_min >= -0.001 and u_max <= 1.001 and v_min >= -0.001 and v_max <= 1.001,
+        f"the islands stay inside [0,1] (u {u_min:.2f}..{u_max:.2f}, "
+        f"v {v_min:.2f}..{v_max:.2f})",
+    )
+
+    # The islands keep their shape: every island got the same factor.
+    values = report.densities
+    if len(values) > 1:
+        spread = max(values) / min(values)
+        check(
+            spread < 1.06,
+            f"the islands now share the density (spread {spread:.3f})",
+        )
+
+    # A second run has nothing to do: the layout must not be touched.
+    before = [tuple(loop.uv) for loop in cube.data.uv_layers[0].data]
+    again = uv.match_density(cube, 64.0)
+    after = [tuple(loop.uv) for loop in cube.data.uv_layers[0].data]
+    check(again.get("ok") is True, "the second run works")
+    check(again.get("changed") is False, "the second run reports no change")
+    check(before == after, "the UV coordinates are bit for bit the same")
+    check(bool(islands_before), "the layout was measured before")
+
+
 def part_density_tools(uv):
     print("\n== the density tool")
     tools = importlib.import_module("blender_addon.tools")
@@ -736,6 +794,7 @@ def main():
         part_settings(uv)
         part_unwrap(uv)
         part_density_match(uv, image)
+        part_density_keeps_the_layout(uv, image)
         part_padding(uv)
         part_atlas(uv, image)
         part_own_seams(uv)

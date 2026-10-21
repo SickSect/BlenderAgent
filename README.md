@@ -179,7 +179,7 @@ Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
 | `uv.unwrap` / `uv.unwrap_own` | Unwraps with automatic seams, or leaves every island where it is (for baking) |
 | `uv.mark_seams` | By angle, by height (a horizontal cut — the way a sleeve needs one) or by the sharp edges |
 | `uv.build_atlas` | Lays the islands of several objects into one shared atlas with a gap and a padding |
-| `uv.match_density` | Brings every island to the same texel density, so the texture is equally sharp everywhere |
+| `uv.match_density` | Brings every island to the same texel density, so the texture is equally sharp everywhere. The islands are scaled and packed — the layout changes, and `Ctrl+Z` puts it back. An already even layout is not touched at all |
 | `uv.symmetric` | Unwraps symmetrically: the far half gets the UVs of its counterpart, so one painting serves both sides |
 | `uv.export_kit` / `uv.import_atlas` | The round trip with Aseprite or Krita: the layout as a PNG plus a manifest (the atlas size, the gap, the density) and a copy of the current texture — paint it there, bring it back, and the UV coordinates are never touched, so the picture lands exactly where the layout said it would |
 

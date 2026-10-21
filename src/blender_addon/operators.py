@@ -1237,12 +1237,22 @@ class GAA_OT_match_density(bpy.types.Operator):
             return {"CANCELLED"}
 
         lines = [i18n.T("uv.density_target", n=int(settings.density))]
+        changed = 0
         for report in done:
             after = ", ".join(f"{d}" for d in report["after"]) or "-"
             line = f"- {report['object']}: {after} px/м"
+            if report.get("changed"):
+                changed += 1
+            else:
+                line += " (плотность уже одинаковая, UV не тронуты)"
             if not report.get("fits", True):
                 line += f" (текстура нужна {report['needed_size']}px)"
             lines.append(line)
+        if changed:
+            lines.append(
+                f"Острова {changed} объекта(ов) отмасштабированы и переупакованы. "
+                "Ctrl+Z вернёт прежнюю раскладку."
+            )
         state.add_display("result", "\n".join(lines))
         self.report({"INFO"}, i18n.T("uv.density_done", n=len(done)))
         state._redraw()

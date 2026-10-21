@@ -1100,11 +1100,37 @@ def _uv_bounds(report: UVReport) -> Tuple[float, float, float, float]:
     return (u_min, v_min, u_max, v_max)
 
 
+def _pack_islands(context, rotate: bool = False, scale: bool = False) -> None:
+    """Pack the islands of the edited object.
+
+    ``scale`` is off by default on purpose: packing with the scale on
+    stretches the islands to fill the texture space, and that would undo the
+    density correction we just made.
+    """
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    overrides = _view3d_override(context)
+    with bpy.context.temp_override(**overrides):
+        bpy.ops.uv.pack_islands(
+            rotate=rotate, scale=scale, margin_method="SCALED", margin=0.001
+        )
+
+
+def _uv_extent(report: UVReport) -> float:
+    """How much of the texture space the islands take (1.0 = exactly fits)."""
+    u_min, v_min, u_max, v_max = _uv_bounds(report)
+    return max(u_max - u_min, v_max - v_min)
+
+
 def match_density(obj, target: Optional[float] = None, context=None) -> Dict:
     """Bring every island of *obj* to the same texel density.
 
-    Returns a report: the density before and after, and how big the texture
-    has to be for the islands to fit.
+    The islands are measured **as they are**, scaled around their own centres
+    and packed once. The layout of the user survives: nothing is rotated, and
+    if the density is already even the UVs are not touched at all.
+
+    Returns a report: the density before and after, whether the UVs were
+    changed, and how big the texture has to be for the islands to fit.
     """
     settings = settings_from_scene()
     goal = float(target) if target else settings.density
@@ -1112,6 +1138,7 @@ def match_density(obj, target: Optional[float] = None, context=None) -> Dict:
         "object": obj.name,
         "target": goal,
         "ok": False,
+        "changed": False,
         "before": [],
         "after": [],
         "needed_size": 0,
@@ -1133,34 +1160,48 @@ def match_density(obj, target: Optional[float] = None, context=None) -> Dict:
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_all(action="SELECT")
 
-        overrides = _view3d_override(context)
-        with bpy.context.temp_override(**overrides):
-            # 1. lay the islands out.
-            bpy.ops.uv.pack_islands(
-                rotate=True, scale=True, margin_method="SCALED", margin=0.001
-            )
+        # 1. Measure the islands **as they are**. The density of an island
+        #    depends on its own area, not on where it lies - packing first
+        #    would rewrite the layout *and* measure the wrong thing.
         first = analyze(obj)
         report["before"] = [
             round(i.density, 2) for i in first.islands if i.density
         ]
 
-        # 2 and 3: measure, then scale every island to the target.
+        # 2. Scale every island to the target density, around its centre.
         factors = _island_factors(first, goal)
+        if all(abs(factor - 1.0) < 1e-3 for factor in factors):
+            # The density is already even: the UVs are left exactly as they
+            # are. A button that only measures is not a button that breaks
+            # the layout.
+            report["ok"] = True
+            report["after"] = list(report["before"])
+            return report
+
         bpy.ops.object.mode_set(mode="OBJECT")
         _scale_islands(obj, factors)
+        report["changed"] = True
 
-        # 4. move the islands without rescaling them.
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.mesh.select_all(action="SELECT")
-        with bpy.context.temp_override(**overrides):
-            bpy.ops.uv.pack_islands(
-                rotate=False, scale=False, margin_method="SCALED", margin=0.001
-            )
+        # 3. Pack: the islands grew, so they may overlap now. The rotation is
+        #    off (the user chose the orientation) and the scale is off too -
+        #    packing with the scale on would stretch the islands back to fill
+        #    the texture and undo the correction.
+        _pack_islands(context)
+
+        # 4. If the islands no longer fit into the texture space, scale them
+        #    all down together: the densities stay even, just lower than the
+        #    target, and the UVs stay inside [0,1].
+        packed = analyze(obj)
+        extent = _uv_extent(packed)
+        if extent > 1.0:
+            bpy.ops.object.mode_set(mode="OBJECT")
+            _scale_islands(obj, [1.0 / extent] * len(factors))
+            _pack_islands(context)
 
         final = analyze(obj)
         report["after"] = [round(i.density, 2) for i in final.islands if i.density]
 
-        # How big does the texture have to be for the islands to fit?
+        # How big does the texture have to be?
         u_min, v_min, u_max, v_max = _uv_bounds(final)
         texture = final.texture_size[0] or 1024
         width = max(1.0, u_max - u_min)
@@ -1181,6 +1222,7 @@ def match_density(obj, target: Optional[float] = None, context=None) -> Dict:
         except Exception:
             pass
     return report
+
 
 
 def match_density_scene(
@@ -1948,14 +1990,24 @@ def match_density_tool(target=None, objects=None, **kwargs) -> str:
         return f"Nothing was changed: {problems}"
 
     lines = [f"Texel density target: {goal:.0f} px/m"]
+    changed = 0
     for report in done:
         after = ", ".join(f"{d}" for d in report["after"]) or "-"
         line = f"- {report['object']}: {after} px/m"
+        if report.get("changed"):
+            changed += 1
+        else:
+            line += " (already even, the UVs were not touched)"
         if not report.get("fits", True):
             line += (
                 f" (the texture must be {report['needed_size']}px to fit them)"
             )
         lines.append(line)
+    if changed:
+        lines.append(
+            f"The islands of {changed} object(s) were scaled and packed. "
+            "Ctrl+Z puts the old layout back."
+        )
     return "\n".join(lines)
 
 

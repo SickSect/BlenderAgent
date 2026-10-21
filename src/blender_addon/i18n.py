@@ -89,7 +89,11 @@ STRINGS = {
         "op.unwrap_uv.label": "Развернуть",
         "op.unwrap_uv.desc": "Поставить швы по углу, развернуть и уложить острова",
         "op.match_density.label": "Плотность",
-        "op.match_density.desc": "Выровнять плотность текселей по островам объекта",
+        "op.match_density.desc": (
+            "Выровнять плотность текселей по островам: острова масштабируются и "
+            "переупаковываются, раскладка меняется (Ctrl+Z отменяет). Если "
+            "плотность уже одинаковая — ничего не трогаем"
+        ),
         "op.build_atlas.label": "Атлас",
         "op.build_atlas.desc": "Собрать общий атлас из островов выделенных объектов",
         "op.export_uv_kit.label": "UV-комплект",
@@ -501,7 +505,11 @@ STRINGS = {
         "op.unwrap_uv.label": "Unwrap",
         "op.unwrap_uv.desc": "Mark the seams by angle, unwrap and pack the islands",
         "op.match_density.label": "Density",
-        "op.match_density.desc": "Bring every island of the object to the same texel density",
+        "op.match_density.desc": (
+            "Bring every island to the same texel density: the islands are "
+            "scaled and packed, so the layout changes (Ctrl+Z puts it back). "
+            "Nothing is touched when the density is already even"
+        ),
         "op.build_atlas.label": "Atlas",
         "op.build_atlas.desc": "Lay the islands of the selected objects into one shared atlas",
         "op.export_uv_kit.label": "UV kit",
