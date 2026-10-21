@@ -272,12 +272,21 @@ blender --background --factory-startup --python tests/run_exchange_check.py
 blender --background --factory-startup --python tests/run_heightmap_check.py
 blender --background --factory-startup --python tests/run_snapshot_check.py
 blender --background --factory-startup --python tests/run_ui_check.py
+blender --background --factory-startup --python tests/run_readonly_check.py
 ```
 
 The UI has its own check: the panel is only drawn in a window, so a wrong icon
 or a typo in an operator id stays invisible to every other test — and then the
 whole panel dies on the first redraw. `run_ui_check.py` compares the icons and
 the operator ids in the UI with what the running Blender offers.
+
+The reporting buttons are checked for being free: `run_readonly_check.py` takes
+a fingerprint of the whole scene — every vertex, every UV, every socket value,
+every link, the images, the mode, the selection, the project settings — runs
+the doctor, the UV audit, the export check, the texture report and the other
+reporting tools, and compares. A button that only reports must not move a
+single coordinate. The same script checks that the acting buttons leave the
+mesh in object mode instead of stranding you in edit mode.
 
 ---
 
