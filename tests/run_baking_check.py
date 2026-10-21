@@ -167,6 +167,82 @@ def part_bake(baking):
         )
 
 
+def part_orm(baking):
+    print("\n== the ORM map")
+    clean_scene()
+    obj, _mat = make_object("OrmCube")
+    # Bake the maps the ORM is packed from.
+    report = baking.bake(obj, targets=("albedo", "normal", "roughness", "ao"),
+                         size=32, samples=2)
+    check(report.get("ok"), f"the bake finished ({report.get('error')})")
+
+    folder = Path(tempfile.mkdtemp(prefix="gaa_orm_"))
+    result = baking.pack_orm(obj, str(folder))
+    check(result.get("ok"), f"the ORM was packed ({result.get('error')})")
+    path = Path(result.get("path", ""))
+    check(path.exists(), f"the file is on disk ({path.name})")
+    if path.exists():
+        check(path.suffix == ".png", "it is a PNG")
+        check(path.stat().st_size > 0, "the file is not empty")
+
+    # The channels: R = AO, G = roughness, B = metallic. The values must be
+    # the ones of the source maps, not a constant.
+    image = bpy.data.images.get(result.get("image", ""))
+    check(image is not None, "the ORM image is in the file")
+    if image is not None:
+        check(
+            image.colorspace_settings.name == "Non-Color",
+            f"it is a data map ({image.colorspace_settings.name})",
+        )
+        pixels = list(image.pixels)
+        check(len(pixels) >= 32 * 32 * 4, "the image has pixels")
+        if len(pixels) >= 32 * 32 * 4:
+            ao_source = bpy.data.images.get(f"{obj.name}_ao")
+            rough_source = bpy.data.images.get(f"{obj.name}_roughness")
+            check(
+                abs(pixels[0] - list(ao_source.pixels)[0]) < 0.01,
+                f"R is the occlusion ({pixels[0]:.3f})",
+            )
+            check(
+                abs(pixels[1] - list(rough_source.pixels)[0]) < 0.01,
+                f"G is the roughness ({pixels[1]:.3f})",
+            )
+            check(abs(pixels[2]) < 0.01, f"B is the metallic ({pixels[2]:.2f})")
+            check(pixels[3] == 1.0, "the alpha is opaque")
+
+    # Without a bake there is nothing to pack, and the tool says so.
+    clean_scene()
+    bare, _m = make_object("BareCube")
+    empty = baking.pack_orm(bare, str(folder))
+    check(not empty.get("ok"), "without baked maps the ORM is not packed")
+    check(
+        "no baked maps" in empty.get("error", ""),
+        f"the refusal explains itself ({empty.get('error')})",
+    )
+
+
+def part_preview(baking):
+    print("\n== the preview")
+    clean_scene()
+    obj, _mat = make_object("PreviewCube")
+    folder = Path(tempfile.mkdtemp(prefix="gaa_preview_"))
+    path = folder / "preview.png"
+    result = baking.render_preview(obj, str(path), size=64)
+    check(result.get("ok"), f"the preview was rendered ({result.get('error')})")
+    check(path.exists(), f"the picture is on disk ({path.name})")
+    if path.exists():
+        check(path.stat().st_size > 0, "the picture is not empty")
+    # The render settings are put back.
+    check(
+        bpy.context.scene.render.resolution_x == 1920,
+        f"the resolution is back ({bpy.context.scene.render.resolution_x})",
+    )
+    check(
+        bpy.context.scene.camera is None or bpy.context.scene.camera.name != "GAA_Preview_Camera",
+        "the temporary camera is gone",
+    )
+
+
 def part_save(baking):
     print("\n== saving the result")
     clean_scene()
@@ -556,6 +632,8 @@ def main():
         part_bake(baking)
         part_save(baking)
         part_install(baking)
+        part_orm(baking)
+        part_preview(baking)
         part_naming(baking)
         part_names(baking, importlib.import_module("blender_addon.procedural"))
         part_bake_twice(baking)

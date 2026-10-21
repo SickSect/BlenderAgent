@@ -292,6 +292,10 @@ def draw_chat(
         settings.prop(scene, "gaa_bake_samples", text="")
         settings.prop(scene, "gaa_bake_maps", text="")
         settings.prop(scene, "gaa_bake_naming", text="")
+    # The two finishing touches of the pipeline.
+    finish = box.row(align=True)
+    finish.operator("gaa.pack_orm", icon="TEXTURE")
+    finish.operator("gaa.render_preview", icon="RENDER_STILL")
 
     # Procedural materials: built from a description, graph assembled by code.
     box = layout.box()

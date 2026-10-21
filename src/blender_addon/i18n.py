@@ -286,6 +286,8 @@ STRINGS = {
             "вернуть на объект вручную."
         ),
         "bake.done_short": "Текстуры запечены",
+        "bake.orm": "ORM-карта (AO + шероховатость + металл в одной)",
+        "bake.preview": "Превью",
         "bake.failed": "Не удалось запечь: {exc}",
         "bake.bake_no_uv": "У объекта «{obj}» нет UV-развёртки",
         "bake.bake_overlap": "У объекта «{obj}» {n} пар перекрывающихся островов",
@@ -702,6 +704,8 @@ STRINGS = {
             "can put it back on the object by hand."
         ),
         "bake.done_short": "The textures are baked",
+        "bake.orm": "ORM map (AO + roughness + metallic in one)",
+        "bake.preview": "Preview",
         "bake.failed": "Could not bake: {exc}",
         "bake.bake_no_uv": "Object \"{obj}\" has no UV unwrap",
         "bake.bake_overlap": "Object \"{obj}\" has {n} overlapping island pair(s)",

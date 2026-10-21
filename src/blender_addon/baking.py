@@ -852,6 +852,288 @@ def replace_material(obj, material) -> bool:
     return bool(materials_module.assign_material(obj, material))
 
 
+def _image_pixels(image) -> List[float]:
+    """The pixels of an image as a flat RGBA list."""
+    try:
+        return list(image.pixels)
+    except Exception as exc:  # noqa: BLE001 - an unreadable image is not fatal
+        raise RuntimeError(f"cannot read the pixels of {image.name}: {exc}") from exc
+
+
+def pack_orm(
+    obj=None,
+    folder: Optional[str] = None,
+    metallic: Optional[float] = None,
+) -> Dict:
+    """Pack the baked AO and roughness into one ORM image.
+
+    glTF wants a single texture: R = ambient occlusion, G = roughness,
+    B = metallic. The engines read it as one map, and the project carries one
+    file instead of three.
+
+    The source maps are the ones the bake wrote: the AO and the roughness of
+    the object. The metallic channel is a constant - the bake cannot produce
+    one - taken from the material when it is known.
+    """
+    result: Dict = {"ok": False, "path": "", "maps": []}
+    if obj is None:
+        obj = bpy.context.view_layer.objects.active
+    if obj is None:
+        result["error"] = "there is no active object"
+        return result
+
+    material = getattr(obj, "active_material", None)
+    if folder is None:
+        folder = bake_folder_for(material)
+
+    def find_image(*names):
+        for name in names:
+            image = bpy.data.images.get(name)
+            if image is not None:
+                return image
+        return None
+
+    ao = find_image(f"{obj.name}_ao")
+    rough = find_image(f"{obj.name}_roughness")
+    if ao is None and rough is None:
+        result["error"] = (
+            f"'{obj.name}' has no baked maps. Bake it first "
+            f"(the AO and the roughness are needed)."
+        )
+        return result
+
+    size = (ao or rough).size[0], (ao or rough).size[1]
+    ao_pixels = _image_pixels(ao) if ao is not None else None
+    rough_pixels = _image_pixels(rough) if rough is not None else None
+    if (ao_pixels and len(ao_pixels) < size[0] * size[1] * 4) or (
+        rough_pixels and len(rough_pixels) < size[0] * size[1] * 4
+    ):
+        result["error"] = "the baked maps are empty"
+        return result
+
+    if metallic is None:
+        metallic = 0.0
+        if material is not None:
+            bsdf = next(
+                (n for n in material.node_tree.nodes if n.type == "BSDF_PRINCIPLED"),
+                None,
+            )
+            if bsdf is not None:
+                socket = bsdf.inputs.get("Metallic")
+                if socket is not None:
+                    metallic = float(socket.default_value)
+
+    count = size[0] * size[1]
+    pixels = [0.0] * (count * 4)
+    for index in range(count):
+        offset = index * 4
+        occlusion = ao_pixels[offset] if ao_pixels else 1.0
+        roughness = rough_pixels[offset] if rough_pixels else 1.0
+        pixels[offset] = max(0.0, min(1.0, occlusion))
+        pixels[offset + 1] = max(0.0, min(1.0, roughness))
+        pixels[offset + 2] = max(0.0, min(1.0, float(metallic)))
+        pixels[offset + 3] = 1.0
+
+    image = bpy.data.images.get(f"{obj.name}_orm")
+    if image is None:
+        image = bpy.data.images.new(f"{obj.name}_orm", size[0], size[1], alpha=False)
+    else:
+        image.scale(size[0], size[1])
+    # The colour space goes FIRST: switching it makes Blender rebuild the
+    # float buffer from the byte buffer, and on a generated image that buffer
+    # is empty - the pixels would be wiped to zero.
+    try:
+        image.colorspace_settings.name = "Non-Color"
+    except Exception:  # noqa: BLE001
+        pass
+    image.pixels = pixels
+
+    try:
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"{obj.name}_orm.png")
+        image.filepath_raw = path
+        image.file_format = "PNG"
+        image.save()
+    except Exception as exc:  # noqa: BLE001 - a failed write is not fatal
+        result["error"] = f"cannot write the ORM map: {exc}"
+        return result
+
+    result["ok"] = True
+    result["path"] = path
+    result["image"] = image.name
+    result["maps"] = [m.name for m in (ao, rough) if m is not None]
+    result["size"] = f"{size[0]}x{size[1]}"
+    return result
+
+
+def _report_orm(result: Dict) -> str:
+    if not result.get("ok"):
+        return f"The ORM map was not packed: {result.get('error', 'unknown reason')}"
+    return (
+        f"Packed the ORM map: {result['path']} ({result['size']}). "
+        "R = ambient occlusion, G = roughness, B = metallic."
+    )
+
+
+@tools.tool(
+    "bake.orm",
+    "Pack the baked maps into one ORM texture",
+    "Pack the baked AO and roughness of the object into a single ORM texture - "
+    "R = ambient occlusion, G = roughness, B = metallic - which is what glTF "
+    "and the game engines expect. The file is written next to the other baked "
+    "maps, so the material can be rebuilt from that folder.",
+    params=("object", "folder"),
+)
+def pack_orm_tool(object=None, folder=None, **kwargs) -> str:
+    """Tool entry point: pack the ORM map."""
+    target = None
+    if object:
+        target = bpy.data.objects.get(str(object))
+    return _report_orm(pack_orm(target, folder))
+
+
+# --- the preview ------------------------------------------------------------
+#
+# A picture of the result. A thumbnail is the fastest way to see whether the
+# material or the bake is what was asked for.
+
+
+def _frame_camera(obj, scene):
+    """A camera that looks at the object from the front and above."""
+    from mathutils import Vector
+
+    corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    if not corners:
+        return None
+    low = Vector((min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners)))
+    high = Vector((max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners)))
+    centre = (low + high) * 0.5
+    radius = max((high - low).length * 0.5, 0.25)
+
+    data = bpy.data.cameras.new("GAA_Preview_Camera")
+    data.lens = 50.0
+    camera = bpy.data.objects.new("GAA_Preview_Camera", data)
+    scene.collection.objects.link(camera)
+    direction = Vector((0.0, -1.0, 0.55)).normalized()
+    camera.location = centre + direction * radius * 3.2
+    camera.rotation_euler = (centre - camera.location).to_track_quat("-Z", "Y").to_euler()
+    return camera
+
+
+def render_preview(obj=None, path: Optional[str] = None, size: int = 512) -> Dict:
+    """Render a small picture of *obj* and save it as a PNG.
+
+    The engine is switched for the shot and everything is put back: the
+    render is a look, not a change of the project.
+    """
+    result: Dict = {"ok": False, "path": ""}
+    if obj is None:
+        obj = bpy.context.view_layer.objects.active
+    if obj is None:
+        result["error"] = "there is no active object"
+        return result
+
+    scene = bpy.context.scene
+    old_engine = scene.render.engine
+    old_res = (scene.render.resolution_x, scene.render.resolution_y,
+                scene.render.resolution_percentage)
+    old_path = scene.render.filepath
+    old_camera = scene.camera
+    old_world = scene.world
+    old_transparent = scene.render.film_transparent
+
+    camera = None
+    sun = None
+    world = None
+    try:
+        camera = _frame_camera(obj, scene)
+        if camera is not None:
+            scene.camera = camera
+
+        # A light, so the shape is readable.
+        sun_data = bpy.data.lights.new("GAA_Preview_Sun", type="SUN")
+        sun_data.energy = 3.0
+        sun = bpy.data.objects.new("GAA_Preview_Sun", sun_data)
+        sun.rotation_euler = (0.6, 0.2, 0.6)
+        scene.collection.objects.link(sun)
+
+        if scene.world is None:
+            world = bpy.data.worlds.new("GAA_Preview_World")
+            scene.world = world
+        else:
+            world = scene.world
+        try:
+            world.node_tree.nodes["Background"].inputs["Color"].default_value = (
+                0.25, 0.25, 0.28, 1.0
+            )
+            world.node_tree.nodes["Background"].inputs["Strength"].default_value = 1.0
+        except Exception:  # noqa: BLE001
+            pass
+
+        scene.render.resolution_x = size
+        scene.render.resolution_y = size
+        scene.render.resolution_percentage = 100
+        scene.render.film_transparent = False
+
+        if path is None:
+            base = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else (
+                os.path.expanduser("~")
+            )
+            path = os.path.join(base, f"{obj.name}_preview.png")
+        scene.render.filepath = path
+        scene.render.image_settings.file_format = "PNG"
+
+        # EEVEE shows the textures; if there is no GPU for it, the workbench
+        # still gives a picture of the shape.
+        errors = []
+        for engine in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE", "BLENDER_WORKBENCH"):
+            try:
+                scene.render.engine = engine
+                bpy.ops.render.render(write_still=True)
+                result["ok"] = True
+                result["path"] = path
+                result["engine"] = engine
+                break
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{engine}: {exc}")
+        if not result["ok"]:
+            result["error"] = "; ".join(errors)
+    except Exception as exc:  # noqa: BLE001 - a failed preview is not fatal
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        scene.render.engine = old_engine
+        scene.render.resolution_x, scene.render.resolution_y, scene.render.resolution_percentage = old_res
+        scene.render.filepath = old_path
+        scene.render.film_transparent = old_transparent
+        scene.camera = old_camera
+        if sun is not None:
+            bpy.data.objects.remove(sun, do_unlink=True)
+        if camera is not None:
+            bpy.data.objects.remove(camera, do_unlink=True)
+        if world is not None and world is not scene.world:
+            bpy.data.worlds.remove(world, do_unlink=True)
+    return result
+
+
+@tools.tool(
+    "preview.render",
+    "Render a picture of the object",
+    "Render a small picture of the active object with its material and save it "
+    "as a PNG next to the project. The fastest way to see whether the result is "
+    "what was asked for. The render settings are put back afterwards.",
+    params=("object", "path", "size"),
+)
+def preview_tool(object=None, path=None, size=512, **kwargs) -> str:
+    """Tool entry point: render a preview."""
+    target = None
+    if object:
+        target = bpy.data.objects.get(str(object))
+    result = render_preview(target, path, int(size or 512))
+    if not result.get("ok"):
+        return f"The preview was not rendered: {result.get('error', 'unknown reason')}"
+    return f"Rendered the preview: {result['path']} ({result.get('engine')})."
+
+
 # --- the tools -------------------------------------------------------------
 
 

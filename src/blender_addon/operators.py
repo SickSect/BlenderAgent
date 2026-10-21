@@ -1444,6 +1444,51 @@ class GAA_OT_bake_textures(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GAA_OT_pack_orm(bpy.types.Operator):
+    """Собрать ORM-карту из запечённых карт"""
+
+    bl_idname = "gaa.pack_orm"
+    bl_label = "ORM-карта"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        result = baking.pack_orm(obj)
+        report = baking._report_orm(result)
+        if result.get("ok"):
+            state.add_display("result", report)
+            self.report({"INFO"}, report)
+        else:
+            state.add_display("error", report)
+            self.report({"ERROR"}, report)
+            return {"CANCELLED"}
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_render_preview(bpy.types.Operator):
+    """Отрендерить превью объекта"""
+
+    bl_idname = "gaa.render_preview"
+    bl_label = "Превью"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        result = baking.render_preview(obj)
+        if result.get("ok"):
+            message = f"Превью: {result['path']}"
+            state.add_display("result", message)
+            self.report({"INFO"}, message)
+        else:
+            message = f"Не удалось отрендерить превью: {result.get('error')}"
+            state.add_display("error", message)
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        state._redraw()
+        return {"FINISHED"}
+
+
 class GAA_OT_height_to_normal(bpy.types.Operator):
     """Сделать карту нормалей из карты высот"""
 
@@ -1726,6 +1771,8 @@ _classes = (
     GAA_OT_export_uv_kit,
     GAA_OT_import_atlas,
     GAA_OT_bake_textures,
+    GAA_OT_pack_orm,
+    GAA_OT_render_preview,
     GAA_OT_height_to_normal,
     GAA_OT_node_fix_colorspace,
     GAA_OT_node_pack,
