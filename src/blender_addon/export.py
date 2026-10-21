@@ -21,11 +21,12 @@ wherever it is shown.
 
 from __future__ import annotations
 
+import os
 from typing import List, Optional
 
 import bpy
 
-from . import api, doctor, materials, textures
+from . import api, doctor, materials, textures, tools
 
 # What the exporters cannot express. The glTF and FBX exporters take a
 # Principled BSDF and map it onto their own model; anything else is either
@@ -207,3 +208,203 @@ def report(max_texture: int = DEFAULT_MAX_TEXTURE) -> str:
     for finding in findings:
         lines.append(f"- {finding.text()}")
     return "\n".join(lines)
+
+
+# --- the export itself ------------------------------------------------------
+#
+# The check above answers "is the project ready?". This writes the file.
+
+# The formats we can write.
+FORMATS = ("glb", "gltf", "fbx")
+
+# The file name we give the export: the scene name, or the object when only
+# one object is exported.
+_DEFAULT_NAME = "Asset"
+
+
+def _call_exporter(operator, **kwargs):
+    """Call an export operator with only the parameters it knows.
+
+    The exporters change their parameters between Blender versions, and an
+    unknown keyword is a TypeError that would kill the export.
+    """
+    try:
+        known = set(operator.get_rna_type().properties.keys())
+    except Exception:  # noqa: BLE001 - the operator is not introspectable
+        known = set(kwargs)
+    return operator(**{k: v for k, v in kwargs.items() if k in known})
+
+
+def _selection(objects=None) -> List:
+    """The objects to export: the given ones, or the selection."""
+    if objects:
+        return list(objects)
+    return [obj for obj in bpy.context.selected_objects]
+
+
+def _export_name(objects) -> str:
+    """The name of the file: the scene, or the single exported object."""
+    if len(objects) == 1:
+        return objects[0].name
+    scene = getattr(bpy.context, "scene", None)
+    name = getattr(scene, "name", "") if scene else ""
+    return name or _DEFAULT_NAME
+
+
+def export(
+    folder: str,
+    fmt: str = "glb",
+    objects=None,
+    apply_modifiers: bool = True,
+    strict: bool = True,
+) -> Dict:
+    """Write the selected objects to *folder* in the *fmt* format.
+
+    ``strict`` refuses the export when the readiness check found errors: the
+    assistant should fix the project first. A person who presses the button
+    gets the export anyway - with the findings in the report.
+    """
+    result: Dict = {
+        "ok": False,
+        "path": "",
+        "objects": [],
+        "findings": [],
+        "size": 0,
+    }
+    fmt = (fmt or "glb").strip().lower()
+    if fmt not in FORMATS:
+        result["error"] = f"unknown format '{fmt}' (known: {', '.join(FORMATS)})"
+        return result
+
+    chosen = _selection(objects)
+    if not chosen:
+        result["error"] = "Nothing is selected, so there is nothing to export."
+        return result
+    result["objects"] = [obj.name for obj in chosen]
+
+    findings = check_export()
+    result["findings"] = [
+        {"severity": finding.severity, "text": finding.text()} for finding in findings
+    ]
+    blocking = [f for f in findings if f.severity == doctor.ERROR]
+    if blocking and strict:
+        result["error"] = (
+            "The project is not ready to be exported:\n"
+            + "\n".join(f"- {f.text()}" for f in blocking)
+        )
+        return result
+
+    # The exporters are built-in add-ons; they may be switched off.
+    module = "io_scene_gltf2" if fmt in ("glb", "gltf") else "io_scene_fbx"
+    try:
+        if module not in bpy.context.preferences.addons:
+            bpy.ops.preferences.addon_enable(module=module)
+    except Exception as exc:  # noqa: BLE001 - the exporter may be an extension
+        result["error"] = (
+            f"The {fmt.upper()} exporter is not available ({exc}). Enable it in "
+            f"the preferences."
+        )
+        return result
+
+    name = _export_name(chosen)
+    suffix = {"glb": ".glb", "gltf": ".gltf", "fbx": ".fbx"}[fmt]
+    path = os.path.join(folder, name + suffix)
+
+    # Only the exported objects may be selected, or the exporter writes the
+    # whole scene.
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in chosen:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = chosen[0]
+
+    try:
+        if fmt in ("glb", "gltf"):
+            _call_exporter(
+                bpy.ops.export_scene.gltf,
+                filepath=path,
+                export_format="GLB" if fmt == "glb" else "GLTF_SEPARATE",
+                use_selection=True,
+                export_apply=apply_modifiers,
+                export_yup=True,
+                export_materials="EXPORT",
+                export_cameras=False,
+                export_lights=False,
+                export_extras=True,
+                export_texture_dir="textures",
+            )
+        else:
+            _call_exporter(
+                bpy.ops.export_scene.fbx,
+                filepath=path,
+                use_selection=True,
+                apply_unit_scale=True,
+                axis_forward="-Z",
+                axis_up="Y",
+                path_mode="COPY",
+                embed_textures=False,
+                use_mesh_modifiers=apply_modifiers,
+                bake_space_transform=False,
+            )
+    except Exception as exc:  # noqa: BLE001 - a failed export must not kill Blender
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    result["ok"] = True
+    result["path"] = path
+    try:
+        result["size"] = os.path.getsize(path)
+    except OSError:
+        result["size"] = 0
+    return result
+
+
+def _report(result: Dict) -> str:
+    """The export result as a readable report."""
+    if not result.get("ok"):
+        return f"The export did not happen: {result.get('error', 'unknown reason')}"
+    lines = [
+        f"Exported {len(result['objects'])} objects to {result['path']}"
+        + (f" ({result['size'] // 1024} kB)" if result.get("size") else "")
+    ]
+    warnings = [f for f in result.get("findings", []) if f["severity"] != doctor.ERROR]
+    if warnings:
+        lines.append("With warnings:")
+        for finding in warnings[:5]:
+            lines.append(f"- {finding['text']}")
+    return "\n".join(lines)
+
+
+def _default_folder() -> str:
+    """Where the export goes when the user does not say: next to the .blend."""
+    if bpy.data.filepath:
+        return os.path.dirname(bpy.data.filepath)
+    return os.path.expanduser("~")
+
+
+@tools.tool(
+    "export.glb",
+    "Export the selection to a glTF file",
+    "Export the selected objects for a game: glTF, the format Unity and "
+    "Unreal read. The readiness check runs first - if it finds errors, the "
+    "export is refused, because a broken file is worse than no file. The "
+    "textures are copied next to it.",
+    params=("folder",),
+)
+def export_glb_tool(folder=None, **kwargs) -> str:
+    """Tool entry point: export to glTF."""
+    result = export(str(folder or _default_folder()), "glb")
+    return _report(result)
+
+
+@tools.tool(
+    "export.fbx",
+    "Export the selection to an FBX file",
+    "Export the selected objects for a game: FBX, with the axes the engines "
+    "expect and the textures copied next to the file. The readiness check runs "
+    "first - if it finds errors, the export is refused.",
+    params=("folder",),
+)
+def export_fbx_tool(folder=None, **kwargs) -> str:
+    """Tool entry point: export to FBX."""
+    result = export(str(folder or _default_folder()), "fbx")
+    return _report(result)

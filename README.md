@@ -209,7 +209,8 @@ paper, snow, lava, plastic, checker, **brick**, **tile**, **cobble**.
 | Tool | What it does |
 |---|---|
 | `project.import_textures` | The whole workflow in one step: scan a folder of maps, build the PBR material, assign it, pack the textures and check that the project is ready to hand off |
-| `export.check_export` | Whether the project is ready for glTF/FBX: lost files, unpacked textures, meshes without UVs, shaders the exporter cannot express, textures that are too large |
+| `export.check` | Whether the project is ready for glTF/FBX: lost files, unpacked textures, meshes without UVs, shaders the exporter cannot express, textures that are too large |
+| `export.glb` / `export.fbx` | Writes the selected objects for a game: the axes the engines expect, the modifiers applied, the textures copied next to the file. The readiness check runs first and refuses the export if it found errors |
 
 ### The assistant's own tools
 

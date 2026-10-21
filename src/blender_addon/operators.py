@@ -1044,6 +1044,36 @@ class GAA_OT_import_textures(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GAA_OT_export_asset(bpy.types.Operator):
+    """Экспортировать выделенное для игры"""
+
+    bl_idname = "gaa.export_asset"
+    bl_label = "Экспорт в игру"
+    bl_options = {"REGISTER", "UNDO"}
+
+    # A folder, not a file: the name is derived from the scene or the object.
+    filepath: StringProperty(subtype="DIR_PATH")
+    format: StringProperty(default="glb")
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        folder = self.filepath or export._default_folder()
+        result = export.export(folder, self.format, strict=False)
+        report = export._report(result)
+        if result.get("ok"):
+            state.add_display("result", report)
+            self.report({"INFO"}, report)
+        else:
+            state.add_display("error", report)
+            self.report({"ERROR"}, report)
+            return {"CANCELLED"}
+        state._redraw()
+        return {"FINISHED"}
+
+
 class GAA_OT_check_export(bpy.types.Operator):
     """Проверить, готов ли проект к передаче"""
 
@@ -1676,6 +1706,7 @@ _classes = (
     GAA_OT_find_material_users,
     GAA_OT_import_textures,
     GAA_OT_check_export,
+    GAA_OT_export_asset,
     GAA_OT_tool_confirm,
     GAA_OT_tool_cancel,
     GAA_OT_check_uv,

@@ -246,6 +246,12 @@ def draw_chat(
     row = box.row(align=True)
     row.operator("gaa.import_textures", icon="FILE_FOLDER")
     row.operator("gaa.check_export", icon="EXPORT")
+    # The last mile: the file the engine opens.
+    export_row = box.row(align=True)
+    glb = export_row.operator("gaa.export_asset", text="GLB", icon="EXPORT")
+    glb.format = "glb"
+    fbx = export_row.operator("gaa.export_asset", text="FBX", icon="EXPORT")
+    fbx.format = "fbx"
 
     # UV: the texel density is the one problem that is invisible in the
     # editor and very visible in a game.
