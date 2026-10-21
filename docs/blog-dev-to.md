@@ -1,227 +1,99 @@
-# Asset Assistant — аддон для Blender, который проверяет, чинит и упаковывает игровые ассеты
+# I built a Blender add-on that tells you which of your game assets are broken
 
-*Черновик для Dev.to. Фактура проверена на Blender 5.2 LTS.*
+*Blender is wonderful for making game assets and terrible for keeping them
+correct.*
 
----
+Nothing warns you that the normal map is in `sRGB` instead of `Non-Color`. That
+the texel density on one island is twice that of its neighbour. That the
+texture file you linked two weeks ago is no longer on disk. You find out when
+the engine complains — or, worse, when it doesn't.
 
-## Зачем это
+## The routine I wanted to kill
 
-У меня регулярно повторяется одна и та же рутина. Собрал материал — запечи
-процедурные текстуры в картинки. Разложил по UV — проверь, что плотность
-текслей везде одинаковая, и выведи раскладку в стороннюю программу, где я
-рисую текстуру. Отдал ассет в движок — а он отскочил: карта нормалей в sRGB,
-текстура не упакована, путь абсолютный.
+Every asset went through the same sequence, and every step was manual:
 
-Каждый из этих шагов — руками, каждый раз, и каждый из них требует
-внимания, которого не хватает, когда в сцене 100 объектов. Найти тот самый
-криво-настроенный объект в такой сцене — уже не «дело на минуту».
+- unwrap it, and check that the texel density is even;
+- hand the layout to an external painting program and bring the result back;
+- bake the procedural material into real textures;
+- pack the textures so the project survives being moved;
+- find out it is still not ready to hand over.
 
-Так появился **Asset Assistant**: расширение для Blender 4.2+, которое
-автоматизирует эту рутину. У него две половины, и они устроены принципиально
-по-разному.
+And the part that actually hurt: with a hundred objects in the scene, finding
+*the* badly configured one is no longer a five-minute job.
 
-## Половина первая: кнопки
+## The doctor
 
-Это детерминированная часть. Она **не нуждается в модели вообще** — это
-обычные кнопки, которые делают настоящую работу в настоящем Blender.
+That last problem is what the add-on is really about.
 
-### Доктор — то, ради чего всё затевалось
+`AI → Material Doctor` reads the whole scene and reports what is broken: the
+wrong colour space, a normal map wired straight into Base Color, a missing
+texture file, a mesh with textures but no UV, absolute paths, unpacked
+textures, a shader the exporter cannot express. It says which object, which
+material, how serious it is, and what can be repaired safely.
 
-`AI → Доктор материалов` разбирает сцену и выдаёт отчёт: что сломано, где
-именно и насколько это серьёзно. Двенадцать проверок:
+Twelve checks, and the safe ones are fixed for you. Nothing is deleted.
 
-- карты данных (roughness, metallic, normal, height) в неправильном цветовом
-  пространстве — `sRGB` вместо `Non-Color`;
-- карта нормалей, подключённая прямо в `Base Color` вместо узла Normal Map;
-- потерянные файлы текстур;
-- текстуры на мешах без UV;
-- абсолютные пути и неупакованные текстуры;
-- неподключённый выход шейдера, дисплейсмент без сабдива;
-- дубликаты и неиспользуемые материалы;
-- карты разного разрешения.
+## What works today
 
-Часть находок чинится безопасно и автоматически (`Доктор → Починить`):
-цветовые пространства, нормали через правильный узел, неподключённый выход.
-Ничего не удаляется — это не «исправить всё», а «показать, что можно
-поправить».
+**The buttons — no model needed, they just do the work**
 
-Именно доктор отвечает на задачу «в сцене 100 объектов»: он находит
-криво-настроенный объект, а не оставляет это человеку.
+- *PBR from folder* — a folder of maps becomes a material, assigned, with the
+  right colour spaces.
+- *Doctor* / *Fix* — the audit above, and the safe repairs.
+- *UV* — unwrap, even texel density, a shared atlas with padding, and a **UV
+  kit**: the layout as a PNG plus a manifest, to paint in Aseprite or Krita and
+  bring back, without the UVs ever being touched.
+- *Bake* — procedural material to textures, written next to the `.blend`, with
+  a plain material on the object. The file names can follow the game
+  convention (`_col`, `_nrm`, `_rgh`).
+- *Textures* — pack into the `.blend`, relative paths, relink lost files, fix
+  colour spaces.
+- *Export* — GLB and FBX with the axes and modifiers the engines expect. The
+  readiness check runs first.
+- *Presets* — 16 procedural recipes and 4 hand-written layered materials to
+  start from.
 
-### Материалы
+**The agent — the same tools, plus a chat that sees your scene**
 
-| Что | Зачем |
-|---|---|
-| **PBR из папки** | Из папки с картами собирает материал, назначает объекту, ставит правильные цветовые пространства. Повторный запуск обновляет материал, а не плодит `Wood.001` |
-| **Назначить выделению** | Один материал на всё выделение: активный слот **заменяется**, а не добавляется |
-| **Кто использует** | Кто использует этот материал: объект, индекс слота, число граней в слоте |
-| **Заменить везде** | Замена материала по всей сцене **в слотах** — назначения граней остаются в силе |
-| **Инстанс / одиночный** | Общий меш у нескольких объектов и обратно |
-| **Вариант с оттенком** | Независимая копия с умножением Base Color на оттенок |
-| **Убрать сирот** | Удаляет неиспользуемые материалы и картинки. Разрушающее — спрашивает |
-
-### Текстуры
-
-Отчёт по всем текстурам (размер, цветовое пространство, упакована ли, где
-файл). **Упаковка** — текстуры вшиваются в `.blend`, и проект больше не зависит
-от папки на диске. **Относительные пути** — проект можно перенести на другой
-компьютер. **Перелинковка** — потерянный файл находится по имени. **Цветовые
-пространства** — массовая починка.
-
-### UV
-
-Плотность текслей в пикселях на метр — одна проверка, которая невидима в
-редакторе и очень заметна в игре. Сверх того: развёртка (по углу, по
-высоте, по рёбрам), выравнивание плотности, общий атлас с зазором и
-паддингом, симметричная развёртка, и **UV-кит**: раскладка PNG + манифест
-(размер атласа, зазор, плотность) + копия текущей текстуры — чтобы рисовать
-в Aseprite или Krita и принести обратно. UV при этом не трогаются: картинка
-ляжет ровно туда, куда сказала раскладка.
-
-### Бейкинг
-
-Процедурный материал → карты. `Запечь` делает весь путь сразу: печёт
-albedo, нормали, шероховатость и AO, сохраняет карты в папку
-`<Имя>_Bake/` рядом с `.blend`, собирает из них обычный PBR-материал и вешает
-его на объект. Папка остаётся переиспользуемой: тот же материал можно
-поставить на другие объекты кнопкой «PBR из папки».
-
-Размер, число сэмплов, набор карт и **имена файлов** — настройки прямо под
-кнопкой. Имена бывают двух видов: понятные (`_albedo`, `_normal`) и
-«игровые» (`_col`, `_nrm`, `_rgh`) — те, что ждут во многих пайплайнах.
-
-Отдельно: **карта нормалей из карты высоты** — высота дифференцируется в
-наклоны поверхности так, как это делают xNormal и Substance.
-
-### Процедурные материалы
-
-16 рецептов (дерево, мрамор, камень, бетон, ржавчина, шлифованный металл,
-ткань, кожа, бумага, снег, лава, пластик, шахматка, кирпич, плитка,
-булыжник) собираются из описания: модель или пользователь задаёт паттерн,
-цвета и поверхность, аддон собирает граф. Плюс **авторские пресеты** —
-слоёные материалы, написанные руками (ржавый крашеный металл: сталь →
-ржавчина → краска → царапины, два каскада бампа). Ключевые слова
-сопоставляются в коде, поэтому «поцарапанный металл» находит нужный
-пресет без участия модели.
-
-### Экспорт
-
-`Проверка экспорта` — готово ли проект к передаче. **GLB** и **FBX** — сам
-экспорт: оси как ждёт движок, модификаторы применены, текстуры скопированы
-рядом, имя файла от сцены или объекта. Перед экспортом идёт проверка
-готовности: инструмент отказывается выкладывать сломанный проект, кнопка
-экспортирует и пишет находки в отчёт.
-
-### Мелочи, которые экономят нервы
-
-Панель **AI** живёт в трёх местах (3D-вьюпорт, Shader Editor, Image Editor) и
-открывается отдельным окном по `Ctrl+Alt+A`. **Скрипты** — кнопка открывает
-Text Editor рядом с видом, туда же падает код ассистента. **Переписка в Text
-Editor** — весь разговор, вызовы инструментов и их отчёты одним файлом.
-**Шпаргалка** — кнопка «Как пользоваться» открывает короткую памятку прямо в
-Blender. Контекстное меню в шейдерном редакторе: правый клик по картинке —
-починить цветовое пространство, упаковать, сделать путь относительным,
-подключить в Base Color / Roughness / Normal.
-
-## Половина вторая: ИИ-агент
-
-Это вторая половина: чат в панели, который **видит сцену** и умеет
-вызывать те же инструменты.
-
-### Он видит сцену
-
-Каждый запрос уходит с **снимком сцены**: объекты, трансформации, полигоны,
-UV, модификаторы, выделение, материалы с их нодами и текстурами. Снимок
-**фокусируется**: в шейдерном редакторе подробно расписан материал, который
-ты редактируешь, в Image Editor — текстура, во вьюпорте — сцена. Плюс
-раздел «Проблемы»: потерянные файлы, карты данных в sRGB, текстуры на мешах
-без UV — то, чего модель не видит глазами.
-
-### Он вызывает инструменты
-
-Модель может вызвать любой из **40 инструментов** по имени:
-
-````
-```tool
-material.build_from_folder {"folder": "D:/textures/Wood_2k"}
-```
-````
-
-Инструмент выполняется на главном потоке, его отчёт возвращается в контекст
-модели — и ассистент пишет, **что на самом деле произошло**, а не что
-предполагает. Разрушающие инструменты (удалить сироты, распаковать
-текстуры) не выполняются молча: ассистент спрашивает, в чате появляется
-блок «Выполнить / Отмена», и ход остаётся открытым, пока ты не решишь.
-
-### Он знает вещи, которые не выдумывает
-
-**8 скиллов** — проверенные инструкции: имена сокетов Principled BSDF в 4.x/5.x,
-цветовые пространства, разводка PBR-карт, стекло, металлы, карты нормалей,
-распаковка ORM, процедурные рецепты. Тело скилла подставляется **по словам
-твоего запроса** («сделай стеклянный материал» → инструкция про стекло
-приезжает сразу, без дополнительного круга к модели) или по запросу модели
-самой. Каждый пример кода внутри скилла **выполняется в Blender** тестом —
-инструкция не может разъехаться с API, не заметив этого.
-
-### Он пишет код
-
-Когда инструментов не хватает, модель пишет код на bpy — последний блок
-```python запускается кнопкой **«Выполнить код»** прямо в сцене, с Undo.
-После выполнения блок сворачивается в одну строку: он уже отработал, место
-в панели ему не нужно, а сам код остаётся в Text Editor.
-
-### Что он не умеет
-
-Честно: **красивый процедурный материал локальная модель не делает.** Модель
-на 7B не выдумает слоёный граф с каскадами бампа — и не должна: для этого
-есть пресеты, написанные руками. Модель выбирает из готовых и крутит
-числа. Это осознанное разделение: знание живёт в коде (рецепты, ключевые
-слова, параметры), модель занимается рутиной.
-
-## Итого
+- Every request carries a **snapshot of the scene**, focused on what you are
+  looking at right now, and a section of problems the model cannot see.
+- The model can call any of the **40 tools** by name, and reads back what
+  actually happened instead of guessing.
+- **8 skills** carry the knowledge it should not improvise — the exact socket
+  names of Blender 4.x/5.x, colour spaces, PBR wiring. They attach to your
+  own words, and every code sample in them is executed in Blender by a test,
+  so an instruction cannot quietly drift away from the API.
+- When no tool fits, it writes the code; the **Run code** button executes it
+  in the scene, with Undo.
+- Destructive tools never run on their own: it asks, and the chat shows a
+  Run / Cancel block.
 
 | | |
 |---|---|
-| Инструментов | 40 (каждый — кнопка, вызов моделью и headless-тест) |
-| Проверок доктора | 12, из них 4 чинятся автоматически |
-| Скиллов | 8, с исполняемыми примерами кода |
-| Рецептов процедурных материалов | 16 + 4 авторских пресета |
-| Headless-скриптов проверки | 16 — каждый гоняет настоящий код в настоящем Blender |
-| Глав учебника | 23, на русском |
-| Требования | Blender 4.2+ и **либо** локальная модель через Ollama, **либо** API-ключ к любому OpenAI-совместимому эндпоинту |
+| Tools | 40 — each one a button, a model call, and a headless test |
+| Doctor checks | 12, 4 of them repaired automatically |
+| Skills | 8, with runnable code samples |
+| Headless checks | 16 scripts that run the real code in the real Blender |
+| Needs | Blender 4.2+ and a model (local via Ollama, or an API key) — only for the agent half |
 
-Половина аддона (доктор, UV, бейкинг, упаковка, экспорт) **вообще не требует
-модели** — это кнопки. ИИ-агент — множитель, а не фундамент.
+## Where it is going
 
-## Дорожная карта
+**More around the agent**, because right now it does not do that much, but it
+can already help with analysis and information:
 
-**Дальше — по AI-стороне:**
+1. the result of "Run code" back into the model's context, so it can check its
+   own work;
+2. a doctor check for *"this is a flat BSDF, not a procedural material"* —
+   the piece that lets a small local model learn to build materials;
+3. the preset buttons calling the tool directly;
+4. the presets as node groups, so they live in the `.blend` like any Blender
+   asset;
+5. the model driving other add-ons.
 
-1. **Результат «Выполнить код» → в контекст модели.** Сейчас ассистент не
-   знает, отработал ли его код. С этим появляется замыкающий круг: модель
-   пишет граф → аддон проверяет → «это плоский BSDF, а не процедурный
-   материал, вот чего не хватает» → модель переделывает. Это и есть путь, на
-   котором локальная модель со временем научится делать материалы сама.
-2. **Проверка «это плоский BSDF»** в докторе. Сегодня доктор проверяет
-   цветовые пространства, нормали, файлы и UV — но не то, что материал
-   вообще без текстур. Для шага 1 это и есть недостающая деталь.
-3. **Кнопки-пресеты вызывают инструмент напрямую**, а не пишут промпт.
-4. **Пресеты — как нод-группы.** Сейчас пресет это скрипт. Нативный способ
-   для Blender — нод-группа с входами: она живёт в `.blend`, видна в
-   Add-меню шейдера, переносится в любой проект. Тогда один и тот же
-   источник даёт и «пресет для ассистента», и «настоящий материал в
-   файле».
-5. **Модель учится водить другими аддонами.**
+**And around the pipeline:** ORM packing, a preview render, and material
+generation by the model as a separate step once (2) exists.
 
-**По остальному:**
-
-6. **ORM-пак** — R=AO, G=Roughness, B=Metallic в одну картинку (glTF этого
-   хочет).
-7. **Превью-картинка** результата — для «покажи, что получилось».
-8. **Генерация материалов моделью** — отдельным шагом, когда появится
-   проверка из пункта 2.
-
-## Как попробовать
+## Try it
 
 ```bash
 git clone <repo-url>
@@ -229,13 +101,14 @@ cd CLI-code-agent
 python tools/build_addon.py      # -> dist/asset_assistant-<version>.zip
 ```
 
-В Blender: *Edit → Preferences → Get Extensions → ▾ → Install from Disk*,
-выбрать zip, включить **Asset Assistant**.
+*Edit → Preferences → Get Extensions → ▾ → Install from Disk*, pick the zip,
+enable **Asset Assistant**.
 
-Модель нужна только для части с ИИ: локальная — `ollama pull
-qwen2.5-coder:7b`, или API-ключ к любому OpenAI-совместимому эндпоинту.
-Кнопки работают и без модели.
+The buttons need no model at all. For the agent, run Ollama locally
+(`ollama pull qwen2.5-coder:7b`) or point it at any OpenAI-compatible
+endpoint.
 
 ---
 
-*Ссылки: репозиторий, документация, шпаргалка по использованию.*
+*If the doctor has ever found a broken asset you did not know about, that is
+the feature I would like to hear about.*
