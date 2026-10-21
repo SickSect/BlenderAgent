@@ -72,8 +72,8 @@ cd CLI-code-agent
 python tools/build_addon.py          # -> dist/asset_assistant-0.5.9.zip
 ```
 
-Every release is built by GitHub Actions from the tagged commit, so the zip on
-the releases page always matches the tag.
+Every release is built from the tagged commit, so the zip on the releases page
+always matches the tag.
 
 ### 2. Install it in Blender
 
@@ -315,15 +315,35 @@ depend on that.
 
 ---
 
+## Releasing
+
+Publishing is manual — a GitHub release is a web form:
+
+```bash
+python tools/release.py --bump 0.5.10   # write the version everywhere
+python tools/release.py                 # build the zip and print the steps
+git add -A && git commit -m "release: 0.5.10"
+git tag v0.5.10 && git push origin main v0.5.10
+```
+
+Then *Releases → Draft a new release*, pick the tag `v0.5.10`, attach
+`dist/asset_assistant-0.5.10.zip`, paste the notes (`RELEASE_NOTES.md`) and
+publish. The script checks that the version agrees in all three places it is
+written, so a forgotten bump cannot ship a mislabelled add-on.
+
+---
+
 ## Repository layout
 
 ```
 src/blender_addon/     the add-on (runs inside Blender)
 src/asset_core/        the worker: Blender-independent, stdlib only
 tools/build_addon.py   builds the installable zip
+tools/release.py       bumps the version, builds the zip, prints the release steps
 docs/                  the textbook (Russian)
 demo/                  a demo scene and its walkthrough
 tests/                 the headless harness
+RELEASE_NOTES.md       the notes of the current release
 ```
 
 The repository also contains the earlier project (`src/codeagent/`, a local
