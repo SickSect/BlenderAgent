@@ -177,6 +177,44 @@ def part_operator_props():
         )
 
 
+def part_angles():
+    """The seam angle is a number of degrees, not radians.
+
+    Blender's "ANGLE" subtype means "this number is in radians" and shows it
+    converted - so a default of 40 degrees was displayed as 2292, and the
+    minimum of 1 became 57. A user could not ask for a seam on a soft bend.
+    """
+    print("\n== the angles are degrees")
+    prop = bpy.types.Scene.bl_rna.properties.get("gaa_uv_angle")
+    check(prop is not None, "the seam angle property exists")
+    if prop is None:
+        return
+    check(
+        prop.subtype != "ANGLE",
+        f"the property is a plain number, not radians (subtype={prop.subtype})",
+    )
+    check(abs(prop.default - 40.0) < 0.001, f"the default is 40 ({prop.default})")
+    # Blender 5.x exposes the slider range as soft_min/soft_max.
+    soft_min = getattr(prop, "soft_min", None)
+    soft_max = getattr(prop, "soft_max", None)
+    check(
+        soft_min is None or abs(float(soft_min) - 1.0) < 0.001,
+        f"it goes down to 1 degree ({soft_min})",
+    )
+    check(
+        soft_max is None or abs(float(soft_max) - 90.0) < 0.001,
+        f"and up to 90 by the slider ({soft_max})",
+    )
+
+    # And the code really works in degrees.
+    uv = importlib.import_module("blender_addon.uv")
+    settings = uv.settings_from_scene()
+    check(
+        abs(settings.angle - 40.0) < 0.001,
+        f"the scene setting is read as degrees ({settings.angle})",
+    )
+
+
 def main():
     part_icons()
     # The add-on is registered once for the whole run: the checks below look
@@ -186,6 +224,7 @@ def main():
     try:
         part_operator_ids()
         part_operator_props()
+        part_angles()
         part_operator_returns()
         part_panel_draw()
     finally:

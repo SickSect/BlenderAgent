@@ -452,7 +452,10 @@ def register() -> None:
         min=1.0,
         max=180.0,
         soft_max=90.0,
-        subtype="ANGLE",
+        # NOT subtype="ANGLE": that subtype tells Blender the number is in
+        # radians, and it then shows 40 degrees as 2292. Our code works in
+        # degrees everywhere and converts on the call, so the field has to
+        # stay a plain number.
     )
     bpy.types.Scene.gaa_uv_method = EnumProperty(
         name="Метод развёртки / Unwrap method",
