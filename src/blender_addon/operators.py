@@ -579,6 +579,39 @@ class GAA_OT_open_image_editor(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GAA_OT_open_text_editor(bpy.types.Operator):
+    """Открыть Text Editor рядом с видом"""
+
+    bl_idname = "gaa.open_text_editor"
+    bl_label = "Скрипты"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        """Show a text editor in the current screen.
+
+        The Text Editor lives in the Scripting workspace, and jumping between
+        workspaces to look at a script is the annoying part. This reuses an
+        area of the *current* screen - the 3D Viewport is never touched, the
+        user would lose the view they are working in.
+        """
+        area = _find_area(context, "TEXT_EDITOR", skip_types=("VIEW_3D",))
+        if area is None or area.spaces.active is None:
+            self.report({"WARNING"}, i18n.T("msg.editor_no_area"))
+            return {"CANCELLED"}
+
+        text = bpy.data.texts.get(_CODE_TEXT_NAME)
+        if text is None:
+            text = bpy.data.texts.new(_CODE_TEXT_NAME)
+        try:
+            area.spaces.active.text = text
+        except Exception as exc:  # noqa: BLE001
+            self.report({"WARNING"}, i18n.T("msg.editor_failed", exc=exc))
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, i18n.T("msg.text_opened", name=text.name))
+        return {"FINISHED"}
+
+
 class GAA_OT_use_preset(bpy.types.Operator):
     """Подставить готовый запрос в поле ввода чата"""
 
@@ -1559,6 +1592,7 @@ _classes = (
     GAA_OT_history_to_text,
     GAA_OT_open_shader_editor,
     GAA_OT_open_image_editor,
+    GAA_OT_open_text_editor,
     GAA_OT_use_preset,
     GAA_OT_pbr_from_folder,
     GAA_OT_material_doctor,
@@ -1601,6 +1635,7 @@ _OPERATOR_KEYS = {
     "gaa.code_to_text": "op.code_to_text",
     "gaa.open_shader_editor": "op.open_shader",
     "gaa.open_image_editor": "op.open_image",
+    "gaa.open_text_editor": "op.open_text",
     "gaa.use_preset": "op.use_preset",
     "gaa.pbr_from_folder": "op.pbr_folder",
     "gaa.material_doctor": "op.material_doctor",

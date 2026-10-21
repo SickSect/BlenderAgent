@@ -301,6 +301,9 @@ def draw_chat(
     row = layout.row(align=True)
     row.operator("gaa.open_shader_editor", icon="NODETREE")
     row.operator("gaa.open_image_editor", icon="IMAGE_DATA")
+    # The scripts: the code of the assistant lands in a text block, and the
+    # Text Editor is in another workspace - this opens it right here.
+    row.operator("gaa.open_text_editor", icon="SCRIPT")
 
     if show_window_button:
         layout.operator("gaa.chat_window", icon="WINDOW")

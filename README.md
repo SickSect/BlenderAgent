@@ -18,8 +18,7 @@ ready to hand over to a game engine.
 |---|---|
 | **Materials** | audit and repair, build a PBR material from a folder of maps, assign to the selection, replace everywhere, instances, tinted variants, cleanup |
 | **Textures** | report, pack into the `.blend`, relative paths, relink lost files, fix colour spaces |
-| **UV** | texel-density audit, seams, unwrap, shared atlas, a kit for Aseprite/Krita |
-| **Baking** | procedural material → maps, shared atlas, normal map from a height map, plain material from the result |
+| **UV** | texel-density audit, seams, unwrap, shared atlas, a kit for Aseprite/Krita || **Baking** | procedural material → maps, shared atlas, normal map from a height map, plain material from the result |
 | **Procedural** | 16 recipes built from a description — always a valid node graph |
 | **Shader menu** | right-click a texture in the Shader Editor: fix its colour space, pack it, make its path relative, connect it to Base Color / Roughness / Normal |
 | **Project** | the whole folder → material → assign → pack → check in one call |
@@ -58,7 +57,14 @@ The backend is switched in the add-on preferences at any time.
 
 ## Install
 
-### 1. Build the extension
+### 1. Get the extension
+
+**Download the ready-made zip** from the
+[releases page](https://github.com/SickSect/CLI-code-agent/releases) — the
+file `asset_assistant-<version>.zip`. No clone, no Python, no build: install
+it and it works.
+
+Or build it yourself from the sources (only the standard library is needed):
 
 ```bash
 git clone <repo-url>
@@ -66,7 +72,8 @@ cd CLI-code-agent
 python tools/build_addon.py          # -> dist/asset_assistant-0.5.9.zip
 ```
 
-Only the standard library is needed to build it.
+Every release is built by GitHub Actions from the tagged commit, so the zip on
+the releases page always matches the tag.
 
 ### 2. Install it in Blender
 
@@ -93,7 +100,9 @@ same zip.)
 
 - `N` in the 3D Viewport → the **AI** tab of the sidebar;
 - the same tab in the Shader Editor and the Image Editor;
-- `Ctrl+Alt+A` anywhere → the chat as a floating window.
+- `Ctrl+Alt+A` anywhere → the chat as a floating window;
+- the **Scripts** button next to *Shader Editor* and *Image Editor* → a Text
+  Editor right next to the view, where the assistant's code lands.
 
 > 🧪 **See it working:** [`demo/README.md`](demo/README.md) is a step-by-step
 > walkthrough for a Blender beginner (in Russian). It opens a scene with
@@ -172,7 +181,7 @@ Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
 | `uv.build_atlas` | Lays the islands of several objects into one shared atlas with a gap and a padding |
 | `uv.match_density` | Brings every island to the same texel density, so the texture is equally sharp everywhere |
 | `uv.symmetric` | Unwraps symmetrically: the far half gets the UVs of its counterpart, so one painting serves both sides |
-| `uv.export_kit` / `uv.import_atlas` | The layout as a PNG plus a manifest, to paint in Aseprite or Krita and bring back — the UV coordinates are never touched |
+| `uv.export_kit` / `uv.import_atlas` | The round trip with Aseprite or Krita: the layout as a PNG plus a manifest (the atlas size, the gap, the density) and a copy of the current texture — paint it there, bring it back, and the UV coordinates are never touched, so the picture lands exactly where the layout said it would |
 
 ### Baking
 
