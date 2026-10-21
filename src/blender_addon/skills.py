@@ -281,10 +281,10 @@ _WEAK_KEYWORDS = frozenset(
 # "стекло" (6) qualifies and "ao" (2) does not.
 MIN_AUTO_SCORE = 5
 
-# How many skills may be attached to a prompt automatically. Kept at one: an
-# automatic load is invisible to the model, and two bodies cost twice the
-# context for a guess.
-MAX_AUTO_SKILLS = 1
+# How many skills may be attached to a prompt automatically. Two: a request
+# about a material matches both the "metal" recipe and the procedural one, and
+# the better material comes from having both.
+MAX_AUTO_SKILLS = 2
 
 _KEYWORD_PATTERNS: Dict[str, "re.Pattern[str]"] = {}
 

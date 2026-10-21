@@ -144,6 +144,7 @@ def tool(
     destructive: bool = False,
     params: Sequence[str] = (),
     preview: Optional[Callable] = None,
+    aliases: Sequence[str] = (),
 ):
     """Register a function as a tool.
 
@@ -156,10 +157,15 @@ def tool(
 
     ``preview`` is optional and only used for destructive tools: it returns
     what is about to be destroyed, so the confirmation can say it out loud.
+
+    ``aliases`` are other names the same tool answers to. A small model
+    guesses the name from the pattern it sees ("material.preset" instead of
+    "procedural.preset"), and a call that hits nothing is a call that is
+    silently dropped.
     """
 
     def wrap(func: Callable) -> Callable:
-        _REGISTRY[tool_id] = Tool(
+        item = Tool(
             id=tool_id,
             title=title,
             description=description,
@@ -168,6 +174,9 @@ def tool(
             params=tuple(params),
             preview=preview,
         )
+        _REGISTRY[tool_id] = item
+        for alias in aliases:
+            _REGISTRY[alias] = item
         return func
 
     return wrap
@@ -176,6 +185,22 @@ def tool(
 def get(tool_id: str) -> Optional[Tool]:
     """The tool with that id, or ``None``."""
     return _REGISTRY.get((tool_id or "").strip().lower())
+
+
+def closest(tool_id: str, limit: int = 1) -> List[Tool]:
+    """The tools whose ids are the closest to *tool_id*.
+
+    The model asks for "material.preset" when the tool is "procedural.preset".
+    Dropping the call would be worse than picking the nearest name.
+    """
+    wanted = (tool_id or "").strip().lower()
+    if not wanted:
+        return []
+    import difflib
+
+    names = difflib.get_close_matches(wanted, list(_REGISTRY), n=limit, cutoff=0.6)
+    return [_REGISTRY[name] for name in names]
+
 
 
 def all_tools() -> List[Tool]:

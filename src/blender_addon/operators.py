@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import traceback
+from pathlib import Path
 from contextlib import redirect_stdout
 
 import bpy
@@ -19,6 +20,7 @@ from . import (
     i18n,
     materials,
     nodemenu,
+    presets,
     objects,
     preferences,
     procedural,
@@ -36,6 +38,7 @@ from . import (
 _POPUP_WIDTH = 480
 _CODE_TEXT_NAME = "AI Assistant Code"
 _HISTORY_TEXT_NAME = "AI Assistant History"
+_HELP_TEXT_NAME = "AI Assistant Help"
 
 
 def _system_prompt(context) -> str:
@@ -55,6 +58,16 @@ def _system_prompt(context) -> str:
     catalog = skills.catalog(state.skill_library())
     if catalog:
         text += "\n\n" + i18n.T("prompt.skills_header") + "\n" + catalog
+
+    # The author's own materials are always named in the prompt: they look
+    # better than any graph a model writes on the spot, and the model has to
+    # know they exist before it decides to improvise.
+    try:
+        preset_names = presets.short_list()
+    except Exception:  # noqa: BLE001 - the presets are optional
+        preset_names = ""
+    if preset_names:
+        text += "\n\n" + i18n.T("prompt.presets_header", names=preset_names)
 
     include = prefs.include_snapshot if prefs is not None else True
     if include:
@@ -609,6 +622,63 @@ class GAA_OT_open_text_editor(bpy.types.Operator):
             return {"CANCELLED"}
 
         self.report({"INFO"}, i18n.T("msg.text_opened", name=text.name))
+        return {"FINISHED"}
+
+
+class GAA_OT_preset_build(bpy.types.Operator):
+    """Собрать материал из авторского пресета"""
+
+    bl_idname = "gaa.preset_build"
+    bl_label = "Авторский материал"
+    bl_options = {"REGISTER", "UNDO"}
+
+    # The list of presets is baked into RNA at registration time: the files
+    # live in the add-on, so the list cannot change while Blender runs.
+    preset: EnumProperty(
+        name="Пресет / Preset",
+        items=[(item.name, item.title, item.description) for item in presets.all_presets()],
+        default=presets.all_presets()[0].name if presets.all_presets() else "none",
+    )
+    name: StringProperty(name="Имя / Name", default="")
+
+    def execute(self, context):
+        material, report = presets.build(self.preset, self.name.strip())
+        if material is None:
+            self.report({"ERROR"}, report)
+            state.add_display("error", report)
+            return {"CANCELLED"}
+        state.add_display("result", report)
+        self.report({"INFO"}, report)
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_open_help(bpy.types.Operator):
+    """Открыть шпаргалку по использованию"""
+
+    bl_idname = "gaa.open_help"
+    bl_label = "Как пользоваться"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        """Show the quick guide in a Text Editor.
+
+        The guide is a file in the add-on, so it travels with the extension and
+        is always the version that matches the installed code.
+        """
+        path = Path(__file__).resolve().parent / "help.md"
+        if not path.is_file():
+            self.report({"WARNING"}, i18n.T("msg.editor_failed", exc=path))
+            return {"CANCELLED"}
+        text = bpy.data.texts.get(_HELP_TEXT_NAME) or bpy.data.texts.new(
+            _HELP_TEXT_NAME
+        )
+        text.clear()
+        text.write(path.read_text(encoding="utf-8"))
+        if not _show_text(context, text):
+            self.report({"WARNING"}, i18n.T("msg.editor_no_area"))
+            return {"CANCELLED"}
+        self.report({"INFO"}, i18n.T("msg.help_opened"))
         return {"FINISHED"}
 
 
@@ -1593,6 +1663,8 @@ _classes = (
     GAA_OT_open_shader_editor,
     GAA_OT_open_image_editor,
     GAA_OT_open_text_editor,
+    GAA_OT_preset_build,
+    GAA_OT_open_help,
     GAA_OT_use_preset,
     GAA_OT_pbr_from_folder,
     GAA_OT_material_doctor,

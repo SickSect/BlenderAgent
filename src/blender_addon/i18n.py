@@ -122,12 +122,19 @@ STRINGS = {
         "msg.shader_opened": "Shader Editor: материал «{name}»",
         "msg.image_opened": "Image Editor: «{name}»",
         "msg.text_opened": "Text Editor: «{name}»",
-        "msg.text_opened": "Text Editor: «{name}»",
+        "msg.help_opened": "Шпаргалка открыта в Text Editor",
         "msg.pbr_done": "Материал «{name}»: {maps}",
         "msg.pbr_assigned": "назначен объекту «{obj}»",
         "msg.pbr_empty": "В папке не нашлось карт (albedo/base, rough, metal, normal, orm, emit, height)",
         "msg.pbr_failed": "Не удалось собрать материал: {exc}",
         "prompt.snapshot_header": "## Снимок текущей сцены",
+        "prompt.presets_header": (
+            "## Авторские материалы (presets)\n"
+            "Это готовые материалы, написанные вручную: {names}. Собери нужный "
+            "инструментом `procedural.preset` и подкрути его параметры. Граф, "
+            "написанный тобой с нуля, будет выглядеть хуже — не делай так, если "
+            "подходящий пресет уже есть."
+        ),
         "prompt.skills_header": (
             "## Инструкции по Blender (skills)\n"
             "Содержимое инструкций тебе пока не передано — виден только список. "
@@ -237,6 +244,7 @@ STRINGS = {
         "menu.set_normal": "Подключить в Normal",
         # -- procedural materials (procedural.py) ---------------------------
         "procedural.title": "Процедурные материалы",
+        "procedural.presets": "Авторские материалы",
         "procedural.built": "Материал «{name}» собран",
         "procedural.no_recipe": "Не понял, какой материал нужен: «{text}»",
         "procedural.unknown": "Нет такого рецепта: «{recipe}»",
@@ -524,11 +532,20 @@ STRINGS = {
         "msg.no_image": "The file has no images",
         "msg.shader_opened": "Shader Editor: material «{name}»",
         "msg.image_opened": "Image Editor: «{name}»",
+        "msg.text_opened": "Text Editor: «{name}»",
+        "msg.help_opened": "The quick guide is open in a Text Editor",
         "msg.pbr_done": "Material «{name}»: {maps}",
         "msg.pbr_assigned": "assigned to «{obj}»",
         "msg.pbr_empty": "No maps found in the folder (albedo/base, rough, metal, normal, orm, emit, height)",
         "msg.pbr_failed": "Could not build the material: {exc}",
         "prompt.snapshot_header": "## Current scene snapshot",
+        "prompt.presets_header": (
+            "## The author's own materials (presets)\n"
+            "These are hand-written materials: {names}. Build the right one with "
+            "the `procedural.preset` tool and turn its parameters. A graph you "
+            "write from scratch will look worse - do not do that when a preset "
+            "fits."
+        ),
         "prompt.skills_header": (
             "## Blender instructions (skills)\n"
             "The instruction texts are not in your context yet — only this list is. "
@@ -638,6 +655,7 @@ STRINGS = {
         "menu.set_normal": "Connect to Normal",
         # -- procedural materials ------------------------------------------
         "procedural.title": "Procedural materials",
+        "procedural.presets": "Author's materials",
         "procedural.built": "The material \"{name}\" is built",
         "procedural.no_recipe": "Could not tell which material is meant: \"{text}\"",
         "procedural.unknown": "There is no recipe called \"{recipe}\"",

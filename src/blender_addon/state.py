@@ -252,6 +252,7 @@ class ChatState:
         self._tool_ok: Dict[str, int] = {}       # successful runs per tool id
         self._tool_fail: Dict[str, int] = {}     # failed runs per tool id
         self._tool_reports: Dict[str, str] = {}   # last report per tool id
+        self._tool_alias: Optional[tuple] = None  # (asked, used) of a near miss
         # A destructive tool waiting for the user's click. While it is set the
         # turn stays open: the model asked, the addon waits.
         self.pending_confirmation: Optional[dict] = None
@@ -407,6 +408,7 @@ class ChatState:
         self._tool_ok = {}
         self._tool_fail = {}
         self._tool_reports = {}
+        self._tool_alias = None
         self.pending_confirmation = None
         self._turn_code = ""
         self.code_collapsed = False
@@ -501,12 +503,19 @@ class ChatState:
     def _requested_tool(self):
         """First tool the reply asked for that exists in the registry.
 
-        Returns ``(tool_id, params)`` or ``None``. Unknown names are ignored:
-        a hallucinated tool must not break the turn.
+        Returns ``(tool_id, params)`` or ``None``. A name that is not in the
+        registry is looked up by similarity: the model asks for
+        "material.preset" when the tool is "procedural.preset", and dropping
+        the call would leave the user with a promise instead of a material.
         """
         for name, params in tools.parse_request(self.stream_buf):
             if tools.get(name) is not None:
                 return name, params
+        for name, params in tools.parse_request(self.stream_buf):
+            close = tools.closest(name)
+            if close:
+                self._tool_alias = (name, close[0].id)
+                return close[0].id, params
         return None
 
     def _remember_turn(self, text: str) -> None:
@@ -599,6 +608,12 @@ class ChatState:
         # The report is checked before it is stored: the note about a wrong
         # recipe has to reach the model *and* the user.
         report = self._warn_on_wrong_recipe(name, params, result.report)
+        if self._tool_alias:
+            # The model asked for a name that does not exist; the nearest one
+            # was used. Say so, or the model will keep using the wrong name.
+            asked, used = self._tool_alias
+            report += f" (The tool is called '{used}', not '{asked}'.)"
+            self._tool_alias = None
         self.tool_results.append({"id": result.id, "report": report})
         self._record_tool(name, params, report, result.ok)
         self._ran_tools.append(

@@ -598,6 +598,18 @@ def list_tool(**kwargs) -> str:
             f"roughness={spec.roughness:g}, bump={spec.bump_strength:g}] "
             f"(keywords: {keywords})"
         )
+    # The author's own materials: the graphs a small model could never invent.
+    # The model is much better at choosing one of them and turning its numbers
+    # than at building a graph from scratch.
+    try:
+        from . import presets
+
+        catalogue = presets.catalog()
+    except Exception:  # noqa: BLE001 - the presets are optional
+        catalogue = ""
+    if catalogue:
+        lines.append("")
+        lines.append(catalogue)
     return "\n".join(lines)
 
 

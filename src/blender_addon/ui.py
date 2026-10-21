@@ -20,7 +20,7 @@ import textwrap
 import bpy
 from bpy.props import CollectionProperty, IntProperty, StringProperty
 
-from . import i18n, preferences, state
+from . import i18n, preferences, presets, state
 
 # EVENT_A ("A" in a circle) — closest thing to an "AI" badge; BOT does not
 # exist as an icon in Blender 4.x/5.x.
@@ -291,10 +291,21 @@ def draw_chat(
     box = layout.box()
     box.label(text=i18n.T("procedural.title"), icon="NODE_MATERIAL")
     box.operator("gaa.procedural_build", icon="ADD")
+    # The author's own materials: the layered graphs a small model cannot
+    # invent. A dropdown of the presets.
+    if presets.all_presets():
+        box.operator_menu_enum(
+            "gaa.preset_build",
+            "preset",
+            text=i18n.T("procedural.presets"),
+        )
 
     row = layout.row(align=True)
     row.operator("gaa.clear", icon="TRASH")
     row.operator("gaa.settings", icon="PREFERENCES")
+    # The quick guide: it lives in the add-on, so it always matches the
+    # installed code.
+    row.operator("gaa.open_help", icon="HELP")
 
     # Materials shortcut: jump straight to the nodes/texture of the active
     # object's material (see operators.py — screen area / space juggling).
