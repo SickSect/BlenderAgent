@@ -97,7 +97,7 @@ generation by the model as a separate step once (2) exists.
 
 ```bash
 git clone <repo-url>
-cd CLI-code-agent
+cd BlenderAgent
 python tools/build_addon.py      # -> dist/asset_assistant-<version>.zip
 ```
 

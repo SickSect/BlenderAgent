@@ -60,7 +60,7 @@ The backend is switched in the add-on preferences at any time.
 ### 1. Get the extension
 
 **Download the ready-made zip** from the
-[releases page](https://github.com/SickSect/CLI-code-agent/releases) — the
+[releases page](https://github.com/SickSect/BlenderAgent/releases) - the
 file `asset_assistant-<version>.zip`. No clone, no Python, no build: install
 it and it works.
 
@@ -68,7 +68,7 @@ Or build it yourself from the sources (only the standard library is needed):
 
 ```bash
 git clone <repo-url>
-cd CLI-code-agent
+cd BlenderAgent
 python tools/build_addon.py          # -> dist/asset_assistant-0.5.9.zip
 ```
 
