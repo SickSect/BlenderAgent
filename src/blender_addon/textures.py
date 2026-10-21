@@ -177,6 +177,32 @@ def pack_all() -> List[str]:
     return packed
 
 
+def pack_all_report() -> Dict:
+    """Pack everything and say what did not work.
+
+    An image whose file is gone cannot be packed, and the old code swallowed
+    that silently - the user saw "not packed" in the report and had no idea
+    why. The reason belongs in the answer.
+    """
+    packed: List[str] = []
+    failed: List[Dict] = []
+    for image in file_images():
+        if image.packed_file is not None:
+            continue
+        if is_missing(image):
+            failed.append(
+                {"name": image.name, "reason": "the file is gone from disk"}
+            )
+            continue
+        try:
+            image.pack()
+        except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
+            failed.append({"name": image.name, "reason": str(exc)})
+            continue
+        packed.append(image.name)
+    return {"packed": packed, "failed": failed}
+
+
 def unpack_all(folder: Optional[str] = None) -> List[str]:
     """Write the packed images back to disk.
 
@@ -413,10 +439,25 @@ def report(lang: Optional[str] = None) -> str:
 )
 def pack_all_tool(**kwargs) -> str:
     """Tool entry point: pack all textures."""
-    packed = pack_all()
-    if not packed:
+    result = pack_all_report()
+    packed = result["packed"]
+    failed = result["failed"]
+    if not packed and not failed:
         return "Nothing to pack: all textures are already inside the .blend."
-    return f"Packed {len(packed)} textures into the .blend: {', '.join(packed)}"
+    lines = []
+    if packed:
+        lines.append(
+            f"Packed {len(packed)} textures into the .blend: {', '.join(packed)}"
+        )
+    if failed:
+        lines.append(f"{len(failed)} texture(s) could not be packed:")
+        for item in failed:
+            lines.append(f"- {item['name']}: {item['reason']}")
+        lines.append(
+            "They stay on disk. Use the relink tool to find the missing files, "
+            "or pack them after fixing the paths."
+        )
+    return "\n".join(lines)
 
 
 def _preview_unpack(params=None) -> str:

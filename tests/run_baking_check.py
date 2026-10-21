@@ -243,6 +243,36 @@ def part_preview(baking):
     )
 
 
+def part_orm_wins(procedural, materials):
+    print("\n== the ORM map wins over the separate maps")
+    folder = Path(tempfile.mkdtemp(prefix="gaa_orm_folder_"))
+    for name in ("Wood_col.png", "Wood_nrm.png", "Wood_rgh.png",
+                 "Wood_ao.png", "Wood_orm.png"):
+        scratch = bpy.data.images.new(name + "_scratch", width=8, height=8)
+        scratch.filepath_raw = str(folder / name)
+        scratch.file_format = "PNG"
+        scratch.save()
+        bpy.data.images.remove(scratch)
+
+    maps = materials.find_maps(str(folder))
+    check("orm" in maps, f"the ORM map is found ({sorted(maps)})")
+    check("ao" not in maps, "the separate AO is not used any more")
+    check("rough" not in maps, "the separate roughness is not used any more")
+    check("metal" not in maps, "the separate metallic is not used any more")
+    check("base" in maps and "normal" in maps, "the colour and the normal stay")
+
+    # Without an ORM the separate maps are used as they are.
+    folder2 = Path(tempfile.mkdtemp(prefix="gaa_orm_folder2_"))
+    for name in ("Wood_col.png", "Wood_nrm.png", "Wood_rgh.png"):
+        scratch = bpy.data.images.new(name + "_scratch", width=8, height=8)
+        scratch.filepath_raw = str(folder2 / name)
+        scratch.file_format = "PNG"
+        scratch.save()
+        bpy.data.images.remove(scratch)
+    maps2 = materials.find_maps(str(folder2))
+    check("rough" in maps2, f"without an ORM the roughness is used ({sorted(maps2)})")
+
+
 def part_save(baking):
     print("\n== saving the result")
     clean_scene()
@@ -634,6 +664,10 @@ def main():
         part_install(baking)
         part_orm(baking)
         part_preview(baking)
+        part_orm_wins(
+            importlib.import_module("blender_addon.procedural"),
+            importlib.import_module("blender_addon.materials"),
+        )
         part_naming(baking)
         part_names(baking, importlib.import_module("blender_addon.procedural"))
         part_bake_twice(baking)

@@ -141,12 +141,18 @@ def find_maps(directory: str) -> dict:
     """Map ``role -> filepath`` for recognised textures in *directory*.
 
     Files are visited in name order, so the first match wins when a folder
-    holds several candidates for one role.
+    holds several candidates for one role. An ORM map wins over the separate
+    AO, roughness and metallic maps: it carries all three, and keeping the
+    separate ones would wire the same inputs twice.
     """
-    return {
+    maps = {
         role: paths[0]
         for role, paths in find_map_candidates(directory).items()
     }
+    if "orm" in maps:
+        for role in ("ao", "rough", "metal"):
+            maps.pop(role, None)
+    return maps
 def load_images(maps: dict) -> dict:
     """Load ``role -> filepath`` as images, fixing each one's colour space."""
     images = {}

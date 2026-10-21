@@ -869,16 +869,23 @@ class GAA_OT_pack_textures(bpy.types.Operator):
 
     def execute(self, context):
         try:
-            packed = textures.pack_all()
+            result = textures.pack_all_report()
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, i18n.T("textures.failed", exc=exc))
             return {"CANCELLED"}
 
-        if not packed:
+        packed = result["packed"]
+        failed = result["failed"]
+        if not packed and not failed:
             message = i18n.T("textures.nothing_to_pack")
+            state.add_display("result", message)
         else:
             message = i18n.T("textures.packed", n=len(packed))
-            state.add_display("result", message + "\n" + "\n".join(f"- {n}" for n in packed))
+            lines = [message] + [f"- {n}" for n in packed]
+            if failed:
+                lines.append(i18n.T("textures.pack_failed", n=len(failed)))
+                lines += [f"- {f['name']}: {f['reason']}" for f in failed]
+            state.add_display("result", "\n".join(lines))
         self.report({"INFO"}, message)
         state._redraw()
         return {"FINISHED"}
