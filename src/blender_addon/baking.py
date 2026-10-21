@@ -1079,7 +1079,11 @@ def render_preview(obj=None, path: Optional[str] = None, size: int = 512) -> Dic
             base = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else (
                 os.path.expanduser("~")
             )
-            path = os.path.join(base, f"{obj.name}_preview.png")
+            # The date and the time in the name: a folder of previews is
+            # impossible to read otherwise, and "preview.png" is overwritten
+            # by the next one.
+            stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+            path = os.path.join(base, f"{obj.name}_preview_{stamp}.png")
         scene.render.filepath = path
         scene.render.image_settings.file_format = "PNG"
 
@@ -1131,7 +1135,11 @@ def preview_tool(object=None, path=None, size=512, **kwargs) -> str:
     result = render_preview(target, path, int(size or 512))
     if not result.get("ok"):
         return f"The preview was not rendered: {result.get('error', 'unknown reason')}"
-    return f"Rendered the preview: {result['path']} ({result.get('engine')})."
+    return (
+        f"Rendered the preview: {result['path']} ({result.get('engine')}). "
+        "The file name carries the date and the time, so the previews of "
+        "different moments do not overwrite each other."
+    )
 
 
 # --- the tools -------------------------------------------------------------

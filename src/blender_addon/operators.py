@@ -506,6 +506,19 @@ def _show_text(context, text):
     return True
 
 
+def _show_image(context, path):
+    """Show the picture at *path* in an Image Editor area."""
+    area = _find_area(context, "IMAGE_EDITOR", skip_types=("VIEW_3D",))
+    if area is None or area.spaces.active is None:
+        return False
+    try:
+        image = bpy.data.images.load(path, check_existing=True)
+        area.spaces.active.image = image
+    except Exception:  # noqa: BLE001 - a missing file is not fatal
+        return False
+    return True
+
+
 def _active_object_material(context):
     """The material in the active slot of the active object, if any."""
     obj = getattr(context, "active_object", None) or getattr(context, "object", None)
@@ -1486,6 +1499,10 @@ class GAA_OT_render_preview(bpy.types.Operator):
         if result.get("ok"):
             message = f"Превью: {result['path']}"
             state.add_display("result", message)
+            # Show the picture right away: a preview you have to go and find
+            # is not a preview.
+            if not _show_image(context, result["path"]):
+                message += " (открой файл в Image Editor)"
             self.report({"INFO"}, message)
         else:
             message = f"Не удалось отрендерить превью: {result.get('error')}"

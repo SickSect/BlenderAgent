@@ -232,6 +232,18 @@ def part_preview(baking):
     check(path.exists(), f"the picture is on disk ({path.name})")
     if path.exists():
         check(path.stat().st_size > 0, "the picture is not empty")
+
+    # Without a path the name carries the date and the time.
+    named = baking.render_preview(obj, size=32)
+    check(named.get("ok"), "the preview with a generated name was rendered")
+    if named.get("ok"):
+        name = Path(named["path"]).name
+        check(
+            "preview_" in name and len(name) > len("C_preview_.png"),
+            f"the name carries the date and the time ({name})",
+        )
+        check(Path(named["path"]).exists(), "the picture is on disk")
+
     # The render settings are put back.
     check(
         bpy.context.scene.render.resolution_x == 1920,
@@ -241,6 +253,13 @@ def part_preview(baking):
         bpy.context.scene.camera is None or bpy.context.scene.camera.name != "GAA_Preview_Camera",
         "the temporary camera is gone",
     )
+
+    # The button: it renders and, if there is an Image Editor, shows the
+    # picture there. In a headless Blender there is no area, so the button
+    # must still work and just say where the file is.
+    operators = importlib.import_module("blender_addon.operators")
+    pressed = bpy.ops.gaa.render_preview()
+    check(pressed == {"FINISHED"}, f"the preview button works ({pressed})")
 
 
 def part_orm_wins(procedural, materials):
