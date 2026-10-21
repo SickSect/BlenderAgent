@@ -19,7 +19,7 @@ because Python threads that outlive a script are not supported by Blender.
 bl_info = {
     "name": "Asset Assistant",
     "author": "Aleksei Zalogin",
-    "version": (0, 5, 5),
+    "version": (0, 5, 9),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar (N) > AI",
     "description": "AI chat assistant for creating assets",
@@ -28,7 +28,7 @@ bl_info = {
 
 import bpy
 
-from . import api, nodemenu, operators, preferences, state, ui, uv
+from . import api, baking, nodemenu, operators, preferences, state, ui, uv
 
 _keymaps = []
 
@@ -67,6 +67,7 @@ def register():
     preferences.register()
     ui.register()
     uv.register()
+    baking.register()
     nodemenu.register()
     operators.register()
     # Publish the version-tolerant helpers where generated code can reach
@@ -86,6 +87,7 @@ def unregister():
     state.get_state().kill_worker()
     operators.unregister()
     nodemenu.unregister()
+    baking.unregister()
     uv.unregister()
     ui.unregister()
     preferences.unregister()

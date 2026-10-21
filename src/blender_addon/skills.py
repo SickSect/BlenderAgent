@@ -288,6 +288,39 @@ MAX_AUTO_SKILLS = 1
 
 _KEYWORD_PATTERNS: Dict[str, "re.Pattern[str]"] = {}
 
+# Words that name no material. They are cut out of the text before the match,
+# because they start like the words that do: "текстура" starts like
+# "текстиль" (fabric) and "материал" like "материал". Left in, they send the
+# search to the wrong recipe - that is how "текстуру дерева" found fabric.
+_GENERIC_RE = re.compile(
+    r"(?<!\w)(?:текстур\w*|материал\w*|поверхност\w*|textur\w*|material\w*|surface\w*)",
+    re.IGNORECASE,
+)
+
+
+def strip_generic(text: str) -> str:
+    """The text without the words that name no material."""
+    return _GENERIC_RE.sub(" ", text or "")
+
+
+def keyword_stem(keyword: str) -> str:
+    """The beginning of a keyword, long enough to survive inflection.
+
+    Russian changes the ending ("дерево" -> "дерева"), English adds one
+    ("brick" -> "bricks"). A match on the whole word with word boundaries
+    misses both - and that is how "сделай текстуру дерева" ended up building
+    bricks: the recipe was not found, so nothing guided the model.
+
+    The stem is four characters (three for a four-letter word): long enough
+    to be specific, short enough to survive a case ending. Three would be
+    shorter still, but "сте" would then match "стена" - a wall is not glass.
+    """
+    if len(keyword) <= 3:
+        return keyword
+    if len(keyword) == 4:
+        return keyword[:3]
+    return keyword[:4]
+
 
 def _keyword_re(keyword: str):
     """Word-boundary pattern for *keyword* (cached).
@@ -304,6 +337,34 @@ def _keyword_re(keyword: str):
     return pattern
 
 
+def keyword_score(text: str, keyword: str) -> int:
+    """How strongly *keyword* is present in *text* (0 = absent).
+
+    A whole word with word boundaries scores the length of the keyword; a
+    match by the stem alone scores one less, so an exact match always wins
+    over a lucky prefix - but a stem match is still evidence enough to attach
+    a skill.
+    """
+    if not text or not keyword or len(keyword) < 2:
+        return 0
+    text = strip_generic(text)
+    if _keyword_re(keyword).search(text):
+        return len(keyword)
+    stem = keyword_stem(keyword)
+    if stem == keyword:
+        return 0
+    pattern = _KEYWORD_PATTERNS.get(f"~{stem}")
+    if pattern is None:
+        pattern = re.compile(r"(?<!\w)" + re.escape(stem), re.IGNORECASE)
+        _KEYWORD_PATTERNS[f"~{stem}"] = pattern
+    return len(keyword) - 1 if pattern.search(text) else 0
+
+
+def keyword_in(text: str, keyword: str) -> bool:
+    """True when *keyword* is in *text* as a word - or as an inflected form."""
+    return keyword_score(text, keyword) > 0
+
+
 def score_keywords(skills: Sequence[Skill], text: str) -> List[Tuple[int, Skill]]:
     """``(score, skill)`` pairs for the skills whose keywords appear in *text*.
 
@@ -311,15 +372,17 @@ def score_keywords(skills: Sequence[Skill], text: str) -> List[Tuple[int, Skill]
     """
     if not text:
         return []
+    text = strip_generic(text)
     scored: List[Tuple[int, Skill]] = []
     for skill in skills:
         score = 0
         for keyword in skill.keywords:
             if len(keyword) < 2:
                 continue
-            if not _keyword_re(keyword).search(text):
+            hit = keyword_score(text, keyword)
+            if not hit:
                 continue
-            score += 1 if keyword.lower() in _WEAK_KEYWORDS else len(keyword)
+            score += 1 if keyword.lower() in _WEAK_KEYWORDS else hit
         if score:
             scored.append((score, skill))
     scored.sort(key=lambda pair: (-pair[0], pair[1].name))

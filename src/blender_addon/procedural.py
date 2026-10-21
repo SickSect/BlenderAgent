@@ -33,7 +33,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import bpy
 
-from . import api, materials, tools
+from . import api, materials, skills, tools
 
 # The patterns the builder knows.
 PATTERNS = ("noise", "voronoi", "wave", "checker", "gradient", "brick")
@@ -190,14 +190,17 @@ _add(_recipe(
 ))
 _add(_recipe(
     "marble", "Marble", "Soft veins with a polished surface",
-    ("marble", "stone", "vein", "мрамор", "камень"),
+    ("marble", "vein", "мрамор"),
     pattern="noise", scale=2.0, detail=8.0, distortion=6.0,
     color_a=(0.75, 0.75, 0.73, 1.0), color_b=(0.12, 0.12, 0.13, 1.0),
     roughness=0.18, roughness_variation=0.08, bump_strength=0.05,
 ))
 _add(_recipe(
     "stone", "Stone", "Chunky speckled rock",
-    ("stone", "rock", "granite", "concrete", "камень", "бетон", "гранит"),
+    # "камня" is spelled out: the stem of "камень" does not survive the
+    # Russian case ("камень" -> "камня"), and a request for stone is the
+    # most common one in this whole catalogue.
+    ("stone", "rock", "granite", "камень", "камня", "бетон", "гранит"),
     pattern="voronoi", scale=8.0, detail=4.0,
     color_a=(0.22, 0.21, 0.20, 1.0), color_b=(0.55, 0.54, 0.52, 1.0),
     roughness=0.75, roughness_variation=0.2, bump_strength=0.3,
@@ -323,18 +326,20 @@ def match_recipes(text: str, limit: int = 3) -> List[Tuple[Recipe, int]]:
 
     Returns ``(recipe, score)`` pairs. The score is the sum of the lengths of
     the matched keywords, so a specific word ("wood") beats a generic one.
+
+    The match survives the Russian cases: "текстуру дерева" finds the wood
+    recipe, because the keyword "дерево" is matched by its stem.
     """
     if not text:
         return []
-    lowered = text.lower()
+    lowered = skills.strip_generic(text.lower())
     scored = []
     for recipe in RECIPES.values():
         score = 0
         for keyword in recipe.keywords:
             if keyword in _WEAK_WORDS:
                 continue
-            if keyword in lowered:
-                score += len(keyword)
+            score += skills.keyword_score(lowered, keyword)
         if score:
             scored.append((recipe, score))
     scored.sort(key=lambda pair: (-pair[1], pair[0].name))
@@ -605,7 +610,7 @@ def closest_recipes(name: str, limit: int = 3) -> List[Recipe]:
     wanted = (name or "").strip().lower()
     if not wanted:
         return []
-    matches = difflib.get_close_matches(wanted, list(RECIPES), n=limit, cutoff=0.4)
+    matches = difflib.get_close_matches(wanted, list(RECIPES), n=limit, cutoff=0.7)
     return [RECIPES[key] for key in matches]
 
 
@@ -658,6 +663,17 @@ def _install(material) -> str:
     if obj is None:
         return ""
     return materials.assign_material(obj, material)
+
+
+def _default_name(recipe: str) -> str:
+    """A name for a material the model did not name: 'Wood_Procedural'.
+
+    The marker says what the material is *and* that it is a graph. The baked
+    twin drops it and is called 'Wood_Bake' - the word "procedural" never
+    survives into the result.
+    """
+    title = " ".join(part.capitalize() for part in str(recipe).split("_"))
+    return f"{title}_Procedural"
 
 
 @tools.tool(
@@ -736,7 +752,13 @@ def build_tool(
             recipe = matches[0][0].name
 
     if recipe:
-        material = build_from_recipe(str(recipe), str(name or ""), **overrides)
+        # A material the model did not name gets a name that says what it is:
+        # "Wood_Procedural" says both the material and the fact that it is a
+        # graph. The baked twin is then named "Wood_Bake" - the word
+        # "procedural" never survives into the result.
+        material = build_from_recipe(
+            str(recipe), str(name or _default_name(recipe)), **overrides
+        )
         if material is None:
             # The model may have used its own word for the material ("bricks",
             # "кирпич"). The keywords know it, the name of the recipe does not.
@@ -775,9 +797,22 @@ def build_tool(
             "bump_strength=..."
         )
 
+    if str(pattern).lower() not in PATTERNS:
+        # An unknown pattern would be silently replaced with noise - the model
+        # would ask for planks and get fog. Say so instead.
+        close = difflib.get_close_matches(
+            str(pattern).lower(), list(PATTERNS), n=1, cutoff=0.5
+        )
+        hint = f" Did you mean '{close[0]}'?" if close else ""
+        return (
+            f"'{pattern}' is not a pattern the builder knows.{hint} The "
+            f"patterns are: {', '.join(PATTERNS)}. A surface needs a structure "
+            f"(brick, checker, voronoi, wave); noise alone reads as clouds."
+        )
+
     # No recipe: the model described the material directly, so the
     # parameters come from what it sent.
-    spec = ProcSpec(name=str(name or "Procedural"))
+    spec = ProcSpec(name=str(name or _default_name(pattern)))
     for key, value in overrides.items():
         setattr(spec, key, value)
     material = build_material(spec)

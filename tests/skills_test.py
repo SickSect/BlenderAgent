@@ -27,6 +27,13 @@ _spec.loader.exec_module(skills)
 # The version the add-on ships against; keep in sync with blender_manifest.toml.
 BLENDER = (5, 2, 0)
 
+# A skill is attached to the prompt of every request that matches it, so its
+# size is paid on every such request. The limit keeps the whole prompt inside
+# the context window: the system prompt, the tool catalogue and the snapshot
+# take ~12000 characters, and a skill of 12 kB left the model 3000 tokens for
+# the actual work.
+MAX_SKILL_CHARS = 7000
+
 
 def library():
     skills.reset_cache()
@@ -126,6 +133,21 @@ def test_every_skill_is_complete():
         assert skill.code_blocks(), f"{skill.name}: no ```python block to verify"
 
 
+def test_the_skills_fit_in_the_context():
+    """A skill is attached to *every* request, so it may not be fat.
+
+    The whole prompt - the system prompt, the tool catalogue, the snapshot
+    and the attached skill - has to fit into the context window. A skill of
+    12 kB ate 80% of it and left the model 3000 tokens for the actual work.
+    """
+    for skill in library():
+        assert len(skill.body) <= MAX_SKILL_CHARS, (
+            f"{skill.name}: {len(skill.body)} characters, the limit is "
+            f"{MAX_SKILL_CHARS}. Move the knowledge into the code (a tool) or "
+            f"cut the prose."
+        )
+
+
 def test_catalog_lists_every_skill():
     loaded = library()
     lines = skills.catalog(loaded).splitlines()
@@ -139,6 +161,41 @@ def test_by_name():
     assert skills.by_name(loaded, "MATERIAL-GLASS") is not None
     assert skills.by_name(loaded, "material-glass") is not None
     assert skills.by_name(loaded, "no-such-skill") is None
+
+
+# -- the word matching ------------------------------------------------------
+
+
+def test_keywords_survive_inflection():
+    """A request in a Russian case must still find its keyword.
+
+    "сделай текстуру дерева" found no recipe at all, and the model built
+    bricks instead of wood.
+    """
+    assert skills.keyword_score("сделай текстуру дерева", "дерево")
+    assert skills.keyword_score("деревянная текстура", "дерево")
+    assert skills.keyword_score("стена из дерева", "дерево")
+    assert skills.keyword_score("bricks", "brick")
+    assert skills.keyword_score("a wooden plank", "wood")
+
+
+def test_the_stem_is_not_too_short():
+    """Three characters would match "стена" with "стекло" - a wall is not glass."""
+    assert not skills.keyword_score("кирпичная стена", "стекло")
+    assert not skills.keyword_score("бетонная стена", "стекло")
+
+
+def test_the_generic_words_are_cut_out():
+    """"текстура" starts like "текстиль" (fabric) - that must not match."""
+    assert not skills.keyword_score("текстура ткани", "текстиль")
+    assert skills.keyword_score("текстура ткани", "ткань")
+
+
+def test_a_russian_request_attaches_the_skill():
+    matched = skills.match(library(), "сделай текстуру дерева")
+    assert matched, "the procedural skill was not attached"
+    if matched:
+        assert matched[0].name == "material-procedural"
 
 
 def test_cache_returns_the_same_list_until_files_change():

@@ -35,6 +35,22 @@ _CODE_BLOCK_RE = re.compile(r"```([A-Za-z0-9_+-]*)[ \t]*\n(.*?)```", re.DOTALL)
 _CODE_LANGS = ("", "python", "py", "bpy")
 
 
+def collapse_code(text: str) -> str:
+    """The text with its last code block replaced by a one-line marker.
+
+    After the code has run, the block is dead weight in the chat: it takes
+    half the panel and it has already been executed. The full text stays in
+    ``pending_code``, so it can still be saved to the Text Editor.
+    """
+    blocks = list(_CODE_BLOCK_RE.finditer(text or ""))
+    if not blocks:
+        return text
+    last = blocks[-1]
+    lines = last.group(2).strip().splitlines()
+    marker = i18n.T("msg.code_collapsed", n=len(lines))
+    return text[: last.start()] + marker + text[last.end():]
+
+
 def extract_last_code(text: str) -> str:
     """Last fenced ```python block of an assistant reply ("" when none).
 
@@ -161,6 +177,24 @@ def set_last_display(body: str) -> None:
     wm.gaa_messages[-1].body = body[:MAX_DISPLAY_CHARS]
 
 
+def collapse_last_code() -> bool:
+    """Hide the code block of the last message behind a one-line marker.
+
+    Returns True when something was collapsed. The code itself is not lost -
+    it stays in ``ChatState.pending_code`` and can be written to the Text
+    Editor.
+    """
+    wm = _wm()
+    if wm is None or not len(wm.gaa_messages):
+        return False
+    message = wm.gaa_messages[-1]
+    collapsed = collapse_code(message.body)
+    if collapsed == message.body:
+        return False
+    message.body = collapsed[:MAX_DISPLAY_CHARS]
+    return True
+
+
 def drop_last_display_if_empty() -> None:
     wm = _wm()
     if wm is None or not len(wm.gaa_messages):
@@ -199,7 +233,9 @@ class ChatState:
         self.last_error: Optional[str] = None
         self.pending_code: str = ""    # last ```python block, not run yet
         self.code_ran: bool = False    # True once "Run code" used that block
+        self.code_collapsed: bool = False  # the block in the chat is a marker
         self._turn_code: str = ""      # code of an interrupted round
+        self.turn_user_text: str = ""  # the words of the current turn
 
         # Re-sending the same turn after a skill request needs the original
         # prompt and transport settings kept around.
@@ -301,8 +337,20 @@ class ChatState:
             except Exception:
                 pass
             self._stderr = None
+        # A destructive tool that was waiting for a confirmation is dead with
+        # the turn: leaving it pending would let the user run it after a stop.
+        self.pending_confirmation = None
         self.busy = False
         self.stream_buf = ""
+        # The temp folder holds the two JSONL files and the log. The worker is
+        # dead, so nothing writes into it any more - and without this the
+        # folders pile up in the system temp directory.
+        if self.tmpdir is not None:
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+            self.tmpdir = None
+            self.events_path = None
+            self.commands_path = None
+            self.log_path = None
 
     # -- sending ----------------------------------------------------------
 
@@ -349,6 +397,9 @@ class ChatState:
         self.skill_texts = []
         self.auto_skills = []
         self._fetched_skills = 0
+        # The words of this turn: the add-on uses them to check that a tool
+        # did what the user asked.
+        self.turn_user_text = user_text
         self.tool_results = []
         self.tool_history = []
         self._ran_tools = []
@@ -358,6 +409,7 @@ class ChatState:
         self._tool_reports = {}
         self.pending_confirmation = None
         self._turn_code = ""
+        self.code_collapsed = False
 
         # Attach the recipes the user's words already point at, so the model
         # starts with the right instructions instead of asking for them.
@@ -544,18 +596,21 @@ class ChatState:
             self.stream_buf = ""
             return True
         result = tools.execute(name, params)
-        self.tool_results.append({"id": result.id, "report": result.report})
-        self._record_tool(name, params, result.report, result.ok)
+        # The report is checked before it is stored: the note about a wrong
+        # recipe has to reach the model *and* the user.
+        report = self._warn_on_wrong_recipe(name, params, result.report)
+        self.tool_results.append({"id": result.id, "report": report})
+        self._record_tool(name, params, report, result.ok)
         self._ran_tools.append(
             {
                 "key": (name, tuple(sorted((params or {}).items()))),
                 "id": name,
-                "report": result.report,
+                "report": report,
             }
         )
         self._tool_ok[name] = self._tool_ok.get(name, 0) + (1 if result.ok else 0)
         self._tool_fail[name] = self._tool_fail.get(name, 0) + (0 if result.ok else 1)
-        self._tool_reports[name] = result.report
+        self._tool_reports[name] = report
 
         # The model must see what it said and what the tool answered, or it
         # starts the same answer from scratch and asks for the tool again.
@@ -563,16 +618,44 @@ class ChatState:
         self.history.append(
             {
                 "role": "user",
-                "content": i18n.T("msg.tool_result", name=name, report=result.report),
+                "content": i18n.T("msg.tool_result", name=name, report=report),
             }
         )
         # The code of this turn stays available, and so does the text of the
         # turn: only the *next* round gets a new bubble.
         self._keep_code(self.stream_buf)
 
-        add_display("result", result.report)
+        add_display("result", report)
         self._ask_again(i18n.T("msg.tool_running", name=name))
         return True
+
+    def _warn_on_wrong_recipe(self, tool_id: str, params: dict, report: str) -> str:
+        """Say it out loud when the material is not the one the user asked for.
+
+        The add-on knows the user's words; the model does not always. "Сделай
+        текстуру дерева" ended up as bricks because the recipe was not found -
+        and the user cannot see the recipe in the viewport, only the result.
+        The warning goes into the report, so the model can put it right in the
+        next round.
+        """
+        if tool_id != "procedural.build":
+            return report
+        recipe = str((params or {}).get("recipe") or "")
+        text = self.turn_user_text
+        if not recipe or not text:
+            return report
+        try:
+            from . import procedural
+
+            wanted = procedural.match_recipes(text, limit=1)
+        except Exception:  # noqa: BLE001 - a check must not break the turn
+            return report
+        if not wanted or wanted[0][0].name == recipe:
+            return report
+        return (
+            f"{report} Note: the request matches the recipe "
+            f"'{wanted[0][0].name}', not '{recipe}' - build that one instead."
+        )
 
     def _tool_report(self, name: str, params: dict):
         """The report of an earlier run of this exact call, or ``None``."""
@@ -770,6 +853,9 @@ class ChatState:
             code = extract_last_code(text)
             if not code:
                 code = self._turn_code
+            if code != self.pending_code:
+                # A new block: the chat shows it in full again.
+                self.code_collapsed = False
             self.pending_code = code
             if code:
                 self.code_ran = False
@@ -787,6 +873,8 @@ class ChatState:
 
     def _fail(self, message: str) -> None:
         self.last_error = message
+        # A pending confirmation dies with the turn.
+        self.pending_confirmation = None
         if self.stream_buf:
             self.history.append({"role": "assistant", "content": self.stream_buf})
             set_last_display(self.stream_buf + "\n\n" + i18n.T("msg.interrupted"))
@@ -806,6 +894,7 @@ class ChatState:
         self.pending_code = ""
         self.code_ran = False
         self._turn_code = ""
+        self.turn_user_text = ""
         self.system_prompt = ""
         self.last_config = None
         self.skill_texts = []

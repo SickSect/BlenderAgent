@@ -106,6 +106,9 @@ STRINGS = {
         "msg.output": "Вывод:",
         "msg.code_error": "Ошибка выполнения кода:",
         "msg.code_saved": "Код сохранён в текст «{name}»",
+        "msg.code_collapsed": "▶ Код выполнен ({n} строк)",
+        "msg.code_hidden": "Код уже свёрнут",
+        "pending.collapsed": "Код свёрнут в переписке",
         "msg.history_saved": "Переписка сохранена в текст «{name}»",
         "msg.window_failed": "Не удалось открыть окно чата: {exc}",
         "msg.settings_failed": "Не удалось открыть настройки: {exc}",
@@ -256,6 +259,15 @@ STRINGS = {
         "bake.no_object": "Нет активного объекта",
         "bake.not_ready": "Объект не готов к запеканию:",
         "bake.done": "Запечено для «{obj}»: {maps} ({seconds} с)",
+        "bake.installed": (
+            "Материал «{material}» на объекте «{obj}». Карты сохранены в папку "
+            "«{folder}» — её можно использовать для других объектов (кнопка "
+            "«PBR из папки»)."
+        ),
+        "bake.source_kept": (
+            "Процедурный материал «{material}» остался в файле — его можно "
+            "вернуть на объект вручную."
+        ),
         "bake.done_short": "Текстуры запечены",
         "bake.failed": "Не удалось запечь: {exc}",
         "bake.bake_no_uv": "У объекта «{obj}» нет UV-развёртки",
@@ -493,6 +505,9 @@ STRINGS = {
         "msg.output": "Output:",
         "msg.code_error": "Code execution error:",
         "msg.code_saved": "Code saved to text «{name}»",
+        "msg.code_collapsed": "▶ Code executed ({n} lines)",
+        "msg.code_hidden": "The code is already collapsed",
+        "pending.collapsed": "The code is collapsed in the chat",
         "msg.history_saved": "The conversation was saved to the text «{name}»",
         "msg.window_failed": "Failed to open the chat window: {exc}",
         "msg.settings_failed": "Failed to open the settings: {exc}",
@@ -643,6 +658,15 @@ STRINGS = {
         "bake.no_object": "There is no active object",
         "bake.not_ready": "The object is not ready to bake:",
         "bake.done": "Baked for \"{obj}\": {maps} ({seconds}s)",
+        "bake.installed": (
+            "The material \"{material}\" is on \"{obj}\". The maps are saved in "
+            "the folder \"{folder}\" - use it for other objects with the "
+            "'PBR from folder' button."
+        ),
+        "bake.source_kept": (
+            "The procedural material \"{material}\" is still in the file - you "
+            "can put it back on the object by hand."
+        ),
         "bake.done_short": "The textures are baked",
         "bake.failed": "Could not bake: {exc}",
         "bake.bake_no_uv": "Object \"{obj}\" has no UV unwrap",

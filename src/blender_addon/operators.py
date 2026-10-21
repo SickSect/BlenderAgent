@@ -7,7 +7,7 @@ import traceback
 from contextlib import redirect_stdout
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import EnumProperty, IntProperty, StringProperty
 
 from . import (
     baking,
@@ -317,8 +317,12 @@ class GAA_OT_run_code(bpy.types.Operator):
             state.add_display("result", message)
         # One-shot: the button is hidden once code_ran is set (see ui.py), so a
         # stray second click cannot duplicate the scene again. The code text
-        # stays on screen for reference and for "To Text Editor".
+        # stays in pending_code for the "To Text Editor" button, but the block
+        # in the chat collapses into a one-line marker: it has been executed,
+        # it only takes the screen now.
         chat.code_ran = True
+        chat.code_collapsed = True
+        state.collapse_last_code()
         state._redraw()
         return {"FINISHED"}
 
@@ -400,6 +404,31 @@ class GAA_OT_history_to_text(bpy.types.Operator):
         _show_text(context, text)
         self.report({"INFO"}, i18n.T("msg.history_saved", name=text.name))
         return {"FINISHED"}
+
+
+class GAA_OT_hide_code(bpy.types.Operator):
+    """Свернуть блок кода в переписке"""
+
+    bl_idname = "gaa.hide_code"
+    bl_label = "Скрыть код"
+
+    @classmethod
+    def poll(cls, context):
+        return bool(state.get_state().pending_code)
+
+    def execute(self, context):
+        """Collapse the code block of the last message.
+
+        The code is not deleted: it stays in ``pending_code`` and the "To Text
+        Editor" button still writes it into the file.
+        """
+        chat = state.get_state()
+        if state.collapse_last_code():
+            chat.code_collapsed = True
+            state._redraw()
+            return {"FINISHED"}
+        self.report({"INFO"}, i18n.T("msg.code_hidden"))
+        return {"CANCELLED"}
 
 
 def _find_screen(context):
@@ -1230,13 +1259,16 @@ class GAA_OT_bake_textures(bpy.types.Operator):
             self.report({"ERROR"}, i18n.T("bake.not_ready"))
             return {"CANCELLED"}
 
-        settings = uv.settings_from_scene(context.scene)
-        size = int(settings.atlas)
+        # The settings live on the scene, so they survive the redraw and can
+        # be changed by hand.
+        settings = baking.settings_from_scene(getattr(context, "scene", None))
         try:
-            report = baking.bake(
+            report = baking.bake_and_install(
                 obj,
-                targets=("albedo", "normal"),
-                size=size,
+                targets=baking.expand_maps(settings.maps),
+                size=settings.size,
+                samples=settings.samples,
+                naming=settings.naming,
             )
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, i18n.T("bake.failed", exc=exc))
@@ -1253,6 +1285,16 @@ class GAA_OT_bake_textures(bpy.types.Operator):
             obj=report["object"],
             seconds=round(report["seconds"], 1),
         )
+        message += "\n" + i18n.T(
+            "bake.installed",
+            material=report.get("material", ""),
+            obj=report.get("assigned", report["object"]),
+            folder=report.get("folder", ""),
+        )
+        if report.get("source_material"):
+            message += "\n" + i18n.T(
+                "bake.source_kept", material=report["source_material"]
+            )
         state.add_display("result", message)
         self.report({"INFO"}, i18n.T("bake.done_short"))
         state._redraw()
@@ -1513,6 +1555,7 @@ _classes = (
     GAA_OT_chat_window,
     GAA_OT_run_code,
     GAA_OT_code_to_text,
+    GAA_OT_hide_code,
     GAA_OT_history_to_text,
     GAA_OT_open_shader_editor,
     GAA_OT_open_image_editor,

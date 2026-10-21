@@ -198,6 +198,22 @@ def part_matching(procedural):
     names = [r.name for r, _ in matched]
     check("tile" in names, f"tiles find the tile recipe ({names})")
 
+    # The Russian cases: the request must still find its recipe.
+    matched = procedural.match_recipes("сделай текстуру дерева")
+    names = [r.name for r, _ in matched]
+    check("wood" in names, f"a wood texture finds the wood recipe ({names})")
+    if matched:
+        check(matched[0][0].name == "wood", f"wood wins ({matched[0][0].name})")
+
+    matched = procedural.match_recipes("материал камня")
+    names = [r.name for r, _ in matched]
+    check("stone" in names, f"a stone request finds the stone recipe ({names})")
+    if matched:
+        check(
+            matched[0][0].name == "stone",
+            f"stone wins over marble ({matched[0][0].name})",
+        )
+
     check(
         not procedural.match_recipes("просто сделай что-нибудь"),
         "a request without a material word matches nothing",
@@ -348,6 +364,52 @@ def part_tools(procedural):
     check("no_such_recipe" in result.report, "the answer names the recipe")
 
 
+def part_fallbacks(procedural):
+    print("\n== the chain when the material is not in the catalogue")
+    # build_tool returns the report as a string (the tool wrapper wraps it).
+    result = procedural.build_tool(recipe="brick", name="ChainBrick")
+    check("recipe 'brick'" in result, f"a known recipe builds ({result[:60]})")
+
+    # A word instead of a recipe name: the keywords know it.
+    result = procedural.build_tool(recipe="кирпич", name="ChainWord")
+    check("recipe 'brick'" in result, f"a word finds the recipe ({result[:70]})")
+
+    # A near-miss name: the tool says what is close and does not guess.
+    result = procedural.build_tool(recipe="brik", name="ChainMiss")
+    check("no recipe called" in result, "an unknown name is refused")
+    check("brick" in result, f"the close one is named ({result[:80]})")
+    check(
+        bpy.data.materials.get("ChainMiss") is None,
+        "nothing was built for an unknown name",
+    )
+
+    # No recipe and no pattern: the tool refuses instead of building fog.
+    result = procedural.build_tool(name="ChainNoPattern")
+    check("needs a pattern" in result, "without a pattern the tool refuses")
+    check(
+        bpy.data.materials.get("ChainNoPattern") is None,
+        "no grey noise was built",
+    )
+
+    # An unknown pattern must not become noise behind the user's back.
+    result = procedural.build_tool(name="ChainBadPattern", pattern="planks")
+    check("is not a pattern" in result, f"an unknown pattern is refused ({result[:70]})")
+    check(
+        bpy.data.materials.get("ChainBadPattern") is None,
+        "nothing was built for an unknown pattern",
+    )
+
+    # A known pattern builds from the parameters - the "from scratch" path.
+    result = procedural.build_tool(
+        name="ChainRaw", pattern="voronoi", color_a="#885544", roughness=0.6
+    )
+    check("Built" in result, f"a known pattern builds ({result[:60]})")
+    raw = bpy.data.materials.get("ChainRaw")
+    if raw is not None:
+        types = [n.type for n in raw.node_tree.nodes]
+        check("TEX_VORONOI" in types, f"the pattern was used ({types})")
+
+
 def part_menu():
     print("\n== the node editor context menu")
     nodemenu = importlib.import_module("blender_addon.nodemenu")
@@ -372,6 +434,7 @@ def main():
         part_patterns(procedural)
         part_brick(procedural)
         part_brick_tool(procedural, importlib.import_module("blender_addon.tools"))
+        part_fallbacks(procedural)
         part_overrides(procedural)
         part_tools(procedural)
         part_menu()

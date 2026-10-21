@@ -150,23 +150,32 @@ def draw_chat(
     # -- pending bpy code --------------------------------------------------
     if chat.pending_code and not chat.busy:
         box = layout.box()
-        box.label(text=i18n.T("pending.title"), icon="SCRIPT")
-        preview = chat.pending_code.splitlines()[:_CODE_PREVIEW_LINES]
-        for line in preview:
-            clipped = line if len(line) <= wrap_width else line[:wrap_width] + "…"
-            box.label(text=clipped if clipped else " ")
-        rest = len(chat.pending_code.splitlines()) - len(preview)
-        if rest > 0:
-            box.label(text=i18n.T("pending.more", n=rest))
-        row = box.row(align=True)
-        row.scale_y = 1.3
-        if chat.code_ran:
-            # The script has already been executed for this reply; running it
-            # again would duplicate whatever it created (see operators.py).
-            row.label(text=i18n.T("pending.ran"), icon="CHECKMARK")
+        if getattr(chat, "code_collapsed", False):
+            # The block in the chat is already a one-line marker: showing the
+            # preview again would just take the screen.
+            row = box.row(align=True)
+            row.label(text=i18n.T("pending.collapsed"), icon="CHECKMARK")
+            row.operator("gaa.code_to_text", text="", icon="TEXT")
         else:
-            row.operator("gaa.run_code", icon="PLAY")
-        row.operator("gaa.code_to_text", text="", icon="TEXT")
+            box.label(text=i18n.T("pending.title"), icon="SCRIPT")
+            preview = chat.pending_code.splitlines()[:_CODE_PREVIEW_LINES]
+            for line in preview:
+                clipped = line if len(line) <= wrap_width else line[:wrap_width] + "…"
+                box.label(text=clipped if clipped else " ")
+            rest = len(chat.pending_code.splitlines()) - len(preview)
+            if rest > 0:
+                box.label(text=i18n.T("pending.more", n=rest))
+            row = box.row(align=True)
+            row.scale_y = 1.3
+            if chat.code_ran:
+                # The script has already been executed for this reply; running
+                # it again would duplicate whatever it created (see operators.py).
+                row.label(text=i18n.T("pending.ran"), icon="CHECKMARK")
+            else:
+                row.operator("gaa.run_code", icon="PLAY")
+            row.operator("gaa.code_to_text", text="", icon="TEXT")
+            # Hide the block in the chat without running it.
+            row.operator("gaa.hide_code", text="", icon="X")
 
     # -- confirmation of a destructive tool --------------------------------
     pending = getattr(chat, "pending_confirmation", None)
@@ -266,6 +275,17 @@ def draw_chat(
     row = box.row(align=True)
     row.operator("gaa.bake_textures", icon="RENDER_STILL")
     row.operator("gaa.height_to_normal", icon="NORMALS_VERTEX")
+    # The bake renders every pixel: the size is the whole cost. The settings
+    # live on the scene, not on the operator - a property drawn on an operator
+    # instance is thrown away on the next redraw.
+    scene = getattr(context, "scene", None)
+    if scene is not None:
+        settings = box.row(align=True)
+        settings.scale_y = 0.85
+        settings.prop(scene, "gaa_bake_size", text="")
+        settings.prop(scene, "gaa_bake_samples", text="")
+        settings.prop(scene, "gaa_bake_maps", text="")
+        settings.prop(scene, "gaa_bake_naming", text="")
 
     # Procedural materials: built from a description, graph assembled by code.
     box = layout.box()

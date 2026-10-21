@@ -430,6 +430,127 @@ def part_history_export(state):
     check(len(wm.gaa_messages) >= 2, "the chat still holds its messages")
 
 
+def part_wrong_recipe(state):
+    print("\n== the add-on notices a material that is not the one asked for")
+    tools = importlib.import_module("blender_addon.tools")
+    chat = state.get_state()
+    chat.history = [{"role": "user", "content": "сделай текстуру дерева"}]
+    chat.turn_user_text = "сделай текстуру дерева"
+    chat.system_prompt = "SYS"
+    chat.last_config = {"kind": "ollama", "host": "http://localhost:11434"}
+    chat.last_max_chars = 8000
+    chat.busy = True
+    chat.commands_path = Path(tempfile.mkdtemp(prefix="gaa_wrong_")) / "commands.jsonl"
+    chat.commands_path.write_text("", encoding="utf-8")
+
+    chat._handle(
+        {
+            "type": "chunk",
+            "text": '```tool\nprocedural.build {"recipe": "brick", '
+            '"name": "WrongBrick"}\n```\n',
+        }
+    )
+    chat._handle({"type": "done"})
+    report = chat.tool_results[-1]["report"] if chat.tool_results else ""
+    check(
+        "wood" in report and "not 'brick'" in report,
+        f"the report points at the right recipe ({report[-120:]})",
+    )
+
+
+def part_code_collapse(state):
+    print("\n== the code block collapses when it has run")
+    wm = bpy.context.window_manager
+    state.add_display("assistant", "Вот код:\n```python\nimport bpy\nprint(1)\n```\nГотово.")
+    chat = state.get_state()
+    chat.pending_code = "import bpy\nprint(1)"
+
+    collapsed = state.collapse_last_code()
+    check(collapsed, "the block was collapsed")
+    body = wm.gaa_messages[-1].body
+    check("```python" not in body, f"the code block is gone ({body[:60]!r})")
+    check("print(1)" not in body, "the code text is not in the chat any more")
+    check("Готово" in body, "the rest of the message stayed")
+    check(chat.pending_code, "the code is still available for the Text Editor")
+
+    # Hiding it without running it does the same.
+    state.add_display("assistant", "Ещё код:\n```python\nprint(2)\n```")
+    chat.pending_code = "print(2)"
+    result = bpy.ops.gaa.hide_code()
+    check(result == {"FINISHED"}, f"the hide button works ({result})")
+    check(
+        "print(2)" not in wm.gaa_messages[-1].body,
+        "the second block is collapsed too",
+    )
+
+
+def part_collision(materials, tools):
+    print("\n== a folder with two files for one role")
+    import tempfile
+
+    pack = Path(tempfile.mkdtemp(prefix="gaa_collide_"))
+    for name in ("Wood_col.png", "Wood_albedo.png", "Wood_nrm.png"):
+        scratch = bpy.data.images.new(name + "_scratch", width=8, height=8)
+        scratch.filepath_raw = str(pack / name)
+        scratch.file_format = "PNG"
+        scratch.save()
+        bpy.data.images.remove(scratch)
+
+    candidates = materials.find_map_candidates(str(pack))
+    check(
+        len(candidates.get("base", [])) == 2,
+        f"both files are found for the base role ({len(candidates.get('base', []))})",
+    )
+    check(
+        len(candidates.get("normal", [])) == 1,
+        "the normal map is found under its game name",
+    )
+    maps = materials.find_maps(str(pack))
+    check(
+        maps.get("normal", "").endswith("_nrm.png"),
+        f"the _nrm suffix is understood ({maps.get('normal')})",
+    )
+    result = tools.execute("material.build_from_folder", {"folder": str(pack)})
+    check(result.ok, "the tool builds the material")
+    check(
+        "2 files match 'base'" in result.report,
+        f"the collision is reported ({result.report[-120:]})",
+    )
+
+
+def part_state_hygiene(state):
+    print("\n== the state is clean after a stop")
+    chat = state.get_state()
+    chat.busy = True
+    chat.pending_confirmation = {
+        "id": "textures.unpack_all", "params": {}, "title": "Unpack", "description": "",
+        "preview": "",
+    }
+    tmpdir = Path(state.tempfile.mkdtemp(prefix="gaa_hygiene_"))
+    chat.tmpdir = tmpdir
+    chat.events_path = tmpdir / "events.jsonl"
+    chat.events_path.write_text("", encoding="utf-8")
+
+    chat.kill_worker()
+    check(
+        chat.pending_confirmation is None,
+        "a pending confirmation dies with the turn (stop)",
+    )
+    check(chat.tmpdir is None, "the temp folder is forgotten")
+    check(not tmpdir.exists(), "the temp folder is really removed")
+    check(chat.events_path is None, "the events file is forgotten")
+
+    # A new code block must be shown in full again.
+    chat.code_collapsed = True
+    chat.stream_buf = "```python\nprint(1)\n```"
+    chat._finish_reply()
+    check(
+        not chat.code_collapsed,
+        "a new code block is not collapsed (the Run button comes back)",
+    )
+    check(chat.pending_code.strip() == "print(1)", "the code is on offer again")
+
+
 # -- runner -----------------------------------------------------------------
 
 
@@ -458,6 +579,12 @@ def main():
         part_code_survives(state, tools)
         part_json_in_code(state, tools)
         part_history_export(state)
+        part_wrong_recipe(state)
+        part_code_collapse(state)
+        part_collision(
+            importlib.import_module("blender_addon.materials"), tools
+        )
+        part_state_hygiene(state)
     finally:
         package.unregister()
 

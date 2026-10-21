@@ -31,13 +31,14 @@ Two Blender facts that cost real time to discover are baked into the code:
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 import bpy
 
-from . import findings, tools, uv
+from . import findings, materials, tools, uv
 
 # The bake types we offer, with the settings each one needs.
 BAKE_TYPES = {
@@ -57,6 +58,31 @@ BAKE_SETS = {
     "albedo": ("albedo",),
     "normal": ("normal",),
     "ao": ("ao",),
+}
+
+# The suffixes of the baked files. Two conventions are in use: the readable
+# one ("_albedo", "_normal") and the studio/game one ("_col", "_nrm", "_rgh")
+# that many pipelines and importers expect. Our own folder builder
+# understands both, so the choice is only about what the customer gets.
+BAKE_SUFFIXES = {
+    "readable": {
+        "albedo": "_albedo",
+        "diffuse": "_diffuse",
+        "normal": "_normal",
+        "roughness": "_roughness",
+        "ao": "_ao",
+        "shadow": "_shadow",
+        "emission": "_emission",
+    },
+    "game": {
+        "albedo": "_col",
+        "diffuse": "_dif",
+        "normal": "_nrm",
+        "roughness": "_rgh",
+        "ao": "_ao",
+        "shadow": "_shd",
+        "emission": "_emis",
+    },
 }
 
 # The engine the bake needs.
@@ -299,6 +325,7 @@ def bake(
     margin: int = 16,
     samples: int = 32,
     save_to: Optional[str] = None,
+    naming: str = "readable",
 ) -> Dict:
     """Bake the given maps of *obj*.
 
@@ -364,7 +391,10 @@ def bake(
                 except OSError:
                     folder = None
                 if folder:
-                    path = os.path.join(folder, f"{obj.name}_{key}.png")
+                    suffix = BAKE_SUFFIXES.get(naming, BAKE_SUFFIXES["readable"])
+                    path = os.path.join(
+                        folder, f"{obj.name}{suffix.get(key, '_' + key)}.png"
+                    )
                     if _save_image(target.image, path):
                         report["files"].append(path)
         report["seconds"] = time.time() - started
@@ -387,6 +417,147 @@ def bake(
     return report
 
 
+@dataclass
+class BakeSettings:
+    """The per-scene settings of the bake."""
+
+    size: int = 1024          # the resolution of the baked maps
+    samples: int = 16         # samples per pixel
+    maps: str = "game"        # the set of maps: game / standard / ...
+    naming: str = "game"      # the suffixes of the written files
+
+
+def settings_from_scene(scene=None) -> BakeSettings:
+    """The bake settings of the current scene.
+
+    They live on the scene, not on the operator: a property drawn on an
+    operator instance is thrown away on the next redraw, so the field would
+    jump back to its default the moment the mouse is released.
+    """
+    if scene is None:
+        try:
+            scene = bpy.context.scene
+        except Exception:
+            return BakeSettings()
+    return BakeSettings(
+        size=int(getattr(scene, "gaa_bake_size", 1024)),
+        samples=int(getattr(scene, "gaa_bake_samples", 16)),
+        maps=str(getattr(scene, "gaa_bake_maps", "game")),
+        naming=str(getattr(scene, "gaa_bake_naming", "game")),
+    )
+
+
+# The custom property that remembers which material a baked one came from.
+# After the first bake the object wears the plain material, so the second bake
+# has to look through it - and the folder must not grow a "_baked" suffix
+# every time.
+SOURCE_KEY = "gaa_bake_source"
+
+
+def _source_material(obj):
+    """The material a bake should read: the source, not a previous result."""
+    material = getattr(obj, "active_material", None)
+    if material is None:
+        return None
+    source_name = material.get(SOURCE_KEY)
+    if source_name:
+        return bpy.data.materials.get(source_name) or material
+    return material
+
+
+def _safe_name(name: str) -> str:
+    """A file-system friendly version of a datablock name."""
+    cleaned = "".join(
+        char if (char.isalnum() or char in " _-.") else "_" for char in str(name)
+    ).strip()
+    return cleaned or "Material"
+
+
+def _base_name(name: str) -> str:
+    """The source name without the '_Procedural' marker and the copy suffix.
+
+    Blender marks a second material with the same name as "Wood.001", and the
+    marker may sit before it: "Wood_Procedural.001" is still the same wood.
+    """
+    text = re.sub(r"\.\d{3}$", "", str(name or "")).strip()
+    if text.lower().endswith("_procedural"):
+        text = text[: -len("_Procedural")]
+    return text.strip() or "Material"
+
+
+def bake_folder_for(material) -> str:
+    """The folder the baked maps of *material* belong to.
+
+    Next to the .blend file when it is saved, in the home folder otherwise.
+
+    The name carries the source material, but not the word "procedural": the
+    source is called "RedWood_Procedural" and the baked twin "RedWood_Bake" -
+    so the result never claims to be a graph when it is a picture. The folder
+    name is also the name of the material built from it.
+    """
+    if bpy.data.filepath:
+        base = os.path.dirname(bpy.data.filepath)
+    else:
+        base = os.path.expanduser("~")
+    return os.path.join(base, f"{_safe_name(_base_name(getattr(material, 'name', 'Material')))}_Bake")
+
+
+def bake_and_install(
+    obj,
+    targets: Sequence[str] = ("albedo", "normal", "roughness"),
+    size: int = 1024,
+    margin: int = 16,
+    samples: int = 32,
+    folder: Optional[str] = None,
+    naming: str = "readable",
+) -> Dict:
+    """Bake the material and put an ordinary PBR material on the object.
+
+    This is the whole pipeline in one call: the procedural material is
+    rendered into pictures, the pictures are written to a folder, and the
+    object gets a plain material built from those files. The folder stays on
+    disk, so the same material can be put on other objects later with the
+    "PBR from folder" button.
+
+    Baking alone would change nothing the user can see: the object would
+    still wear the procedural material. The point of the step is the plain
+    material at the end.
+    """
+    material = _source_material(obj)
+    if folder is None:
+        folder = bake_folder_for(material)
+    report = bake(
+        obj,
+        targets=targets,
+        size=size,
+        margin=margin,
+        samples=samples,
+        save_to=folder,
+        naming=naming,
+    )
+    report["folder"] = folder
+    report["source_material"] = getattr(material, "name", "")
+    if not report.get("ok"):
+        return report
+
+    try:
+        baked, _maps, assigned, reused = materials.build_pbr_from_folder(
+            folder, assign_to=obj
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed bake must not kill Blender
+        report["error"] = f"{type(exc).__name__}: {exc}"
+        return report
+    report["material"] = baked.name
+    report["assigned"] = assigned
+    report["reused"] = reused
+    # Remember where it came from: the next bake of this object has to read
+    # the source material again, not the result of the last bake.
+    source_name = report.get("source_material")
+    if source_name and source_name != baked.name:
+        baked[SOURCE_KEY] = source_name
+    return report
+
+
 def baked_images(material) -> List:
     """The images left in the file by a bake."""
     out = []
@@ -394,6 +565,73 @@ def baked_images(material) -> List:
         if image.name.startswith(f"{material.name}_") and image.users == 0:
             out.append(image)
     return out
+
+
+def register() -> None:
+    """Register the per-scene bake settings.
+
+    They live on the scene, not on the operator: a property drawn on an
+    operator instance is thrown away on the next redraw, so the field would
+    jump back to its default the moment the mouse is released.
+    """
+    from bpy.props import EnumProperty, IntProperty
+
+    bpy.types.Scene.gaa_bake_size = IntProperty(
+        name="Размер карт / Map size",
+        description=(
+            "Разрешение запечённых карт в пикселях. Это и есть вся стоимость "
+            "запекания: 2048 вчетверо дороже 1024 / Resolution of the baked maps "
+            "in pixels - this is the whole cost of the bake"
+        ),
+        default=1024,
+        min=64,
+        max=8192,
+    )
+    bpy.types.Scene.gaa_bake_samples = IntProperty(
+        name="Сэмплы / Samples",
+        description=(
+            "Сколько сэмплов считать на пиксель / How many samples per pixel"
+        ),
+        default=16,
+        min=1,
+        max=256,
+    )
+    bpy.types.Scene.gaa_bake_maps = EnumProperty(
+        name="Карты / Maps",
+        description="Какие карты запечь / Which maps to bake",
+        items=[
+            ("game", "Игровые / Game", "albedo, normal, roughness"),
+            ("standard", "Полные / Full", "albedo, normal, roughness, ao"),
+            ("albedo_normal", "Цвет и рельеф / Colour and relief", "albedo, normal"),
+            ("albedo", "Только цвет / Colour only", "albedo"),
+        ],
+        default="game",
+    )
+    bpy.types.Scene.gaa_bake_naming = EnumProperty(
+        name="Имена файлов / File names",
+        description=(
+            "Как называть запечённые карты: '_albedo' или '_col' — второй "
+            "вариант ждут во многих игровых пайплайнах / How to name the baked "
+            "maps: '_albedo' or '_col' - the second one is expected by many game "
+            "pipelines"
+        ),
+        items=[
+            ("game", "Игровые / Game (_col, _nrm, _rgh)", ""),
+            ("readable", "Понятные / Readable (_albedo, _normal)", ""),
+        ],
+        default="game",
+    )
+
+
+def unregister() -> None:
+    for name in (
+        "gaa_bake_size",
+        "gaa_bake_samples",
+        "gaa_bake_maps",
+        "gaa_bake_naming",
+    ):
+        if hasattr(bpy.types.Scene, name):
+            delattr(bpy.types.Scene, name)
 
 
 # --- the atlas bake --------------------------------------------------------
@@ -641,7 +879,7 @@ def bake_tool(
             f"- {p.text('en')}" for p in blocking
         )
 
-    report = bake(
+    report = bake_and_install(
         obj,
         targets=wanted,
         size=int(size),
@@ -661,7 +899,16 @@ def bake_tool(
         elif key == "normal" and info.get("flat"):
             note = " - the normals are flat (no height source in the material)"
         lines.append(f"- {key}: {info.get('filled', 0) * 100:.0f}% filled{note}")
-    lines.append("The images are in the file; pack them or save them to disk.")
+    if report.get("material"):
+        lines.append(
+            f"Built the plain material '{report['material']}' from the baked maps "
+            f"and put it on '{report.get('assigned') or report['object']}'."
+        )
+    if report.get("folder"):
+        lines.append(
+            f"The maps are saved in '{report['folder']}' - put the same material "
+            f"on other objects with the 'PBR from folder' button."
+        )
     return "\n".join(lines)
 
 
@@ -756,7 +1003,7 @@ def replace_tool(object=None, **kwargs) -> str:
         )
 
     material = build_baked_material(
-        albedo, normal, roughness, name=f"{obj.name}_Baked"
+        albedo, normal, roughness, name=f"{obj.name}_Bake"
     )
     if not replace_material(obj, material):
         return "The material could not be replaced."

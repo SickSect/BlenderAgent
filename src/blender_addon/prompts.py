@@ -43,6 +43,9 @@ SYSTEM_PROMPT_RU = """\
   ```
   Инструмент выполнит действие в сцене сам и вернёт тебе отчёт — это быстрее и
   надёжнее, чем писать bpy-код. В этом случае кода не пиши.
+- Если просят МАТЕРИАЛ, сначала вызови `procedural.find` со словами запроса:
+  рецепты и их паттерны живут в коде, а не в твоей памяти. Не подставляй
+  рецепт наугад и не пиши граф нод руками.
 - Сообщения, начинающиеся с «[Инструмент …]» или «[Инструкция …]», — это отчёты
   о уже сделанном, а не слова пользователя. Учитывай их и продолжай работу: не
   повторяй уже выполненный вызов и не начинай ответ заново.
@@ -99,6 +102,9 @@ Working principles:
   The tool performs the action in the scene itself and hands you back a
   report — faster and more reliable than writing bpy code. Do not write
   code in that case.
+- If the user asks for a MATERIAL, call `procedural.find` with the words of
+  the request first: the recipes and their patterns live in the code, not in
+  your memory. Never guess a recipe and never build a node graph by hand.
 - Messages that start with "[Tool …]" or "[Skill …]" are reports about what
   has already been done, not words from the user. Take them into account and
   carry on: do not repeat a call that already ran, and do not start your

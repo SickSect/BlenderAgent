@@ -99,15 +99,32 @@ def detect_role(filename: str):
     return SUFFIX_RULES.get(tokens[-1])
 
 
-def find_maps(directory: str) -> dict:
-    """Map ``role -> filepath`` for recognised textures in ``directory``.
+def _same_folder(first, second) -> bool:
+    """True when the two paths point at the same folder.
 
-    Files are visited in name order, so the first match wins when a folder
-    holds several candidates for one role.
+    The comparison has to survive the spelling: a trailing slash or a
+    different case must not make the add-on build "Wood.001" next to "Wood".
     """
-    maps = {}
+    if not first or not second:
+        return False
+    try:
+        return os.path.normcase(os.path.abspath(first)) == os.path.normcase(
+            os.path.abspath(second)
+        )
+    except (TypeError, ValueError, OSError):
+        return str(first) == str(second)
+
+
+def find_map_candidates(directory: str) -> dict:
+    """``role -> [filepaths]`` for the recognised textures in *directory*.
+
+    A folder can hold several candidates for one role: "Wood_albedo.png" and
+    "Wood_col.png" are both the colour map. The first one in name order wins,
+    and the others are reported, so the collision is never silent.
+    """
+    found: dict = {}
     if not directory or not os.path.isdir(directory):
-        return maps
+        return found
     for name in sorted(os.listdir(directory)):
         if not name.lower().endswith(IMAGE_EXTENSIONS):
             continue
@@ -115,11 +132,21 @@ def find_maps(directory: str) -> dict:
         if not os.path.isfile(path):
             continue
         role = detect_role(name)
-        if role is not None and role not in maps:
-            maps[role] = path
-    return maps
+        if role is not None:
+            found.setdefault(role, []).append(path)
+    return found
 
 
+def find_maps(directory: str) -> dict:
+    """Map ``role -> filepath`` for recognised textures in *directory*.
+
+    Files are visited in name order, so the first match wins when a folder
+    holds several candidates for one role.
+    """
+    return {
+        role: paths[0]
+        for role, paths in find_map_candidates(directory).items()
+    }
 def load_images(maps: dict) -> dict:
     """Load ``role -> filepath`` as images, fixing each one's colour space."""
     images = {}
@@ -254,7 +281,9 @@ def build_pbr_from_folder(directory: str, assign_to=None):
     name = material_name_for(directory)
 
     material = bpy.data.materials.get(name)
-    reused = material is not None and material.get(SOURCE_FOLDER_KEY) == directory
+    reused = material is not None and _same_folder(
+        material.get(SOURCE_FOLDER_KEY), directory
+    )
     if reused:
         # The same folder was already built here: refresh the textures
         # instead of piling up "Wood_2k.001" duplicates.
@@ -304,6 +333,16 @@ def build_from_folder_tool(folder=None, **kwargs) -> str:
     else:
         report = f"Built material '{material.name}' from {folder}"
     report += f" (maps: {roles})."
+    # A folder can hold two files for one role ("Wood_albedo" and "Wood_col").
+    # The first one wins - the collision has to be said out loud.
+    collisions = {
+        role: paths
+        for role, paths in find_map_candidates(folder).items()
+        if len(paths) > 1
+    }
+    for role, paths in collisions.items():
+        names = ", ".join(os.path.basename(path) for path in paths)
+        report += f" Note: {len(paths)} files match '{role}' ({names}) - took the first."
     if assigned:
         report += f" Assigned to '{assigned}'."
     else:

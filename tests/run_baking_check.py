@@ -184,6 +184,164 @@ def part_save(baking):
         )
 
 
+def part_install(baking):
+    print("\n== the whole pipeline: bake, save, build a plain material, install it")
+    clean_scene()
+    obj, material = make_object("InstallCube")
+    folder = Path(tempfile.mkdtemp(prefix="gaa_install_")) / "InstallCube_baked"
+    report = baking.bake_and_install(
+        obj, targets=("albedo", "normal"), size=32, samples=4, folder=str(folder)
+    )
+    check(report.get("ok") is True, f"the pipeline finished ({report.get('error')})")
+    check(bool(report.get("files")), "the maps were written to disk")
+    if report.get("files"):
+        for path in report["files"]:
+            check(Path(path).exists(), f"the PNG is there: {Path(path).name}")
+
+    check(bool(report.get("material")), f"a plain material was built ({report.get('material')})")
+    check(
+        report.get("assigned") == obj.name,
+        f"it was put on the object ({report.get('assigned')})",
+    )
+    check(
+        obj.data.materials and obj.data.materials[0].name == report.get("material"),
+        f"the object wears the baked material ({[m.name for m in obj.data.materials]})",
+    )
+    # The folder is the reusable artifact: the same material can be put on
+    # another object with the "PBR from folder" button.
+    check(folder.is_dir(), "the folder with the maps is on disk")
+    if folder.is_dir():
+        names = sorted(p.name for p in folder.iterdir())
+        check(bool(names), f"the folder holds the maps ({names})")
+    # The procedural material is not deleted - it is still in the file.
+    check(
+        bpy.data.materials.get(material.name) is not None,
+        "the source material is still in the file",
+    )
+
+
+def part_names(baking, procedural):
+    print("\n== the naming pair: <X>_Procedural -> <X>_Bake")
+    # The material the model did not name.
+    result = procedural.build_tool(recipe="wood")
+    check(
+        "'Wood_Procedural'" in result,
+        f"a material without a name says what it is ({result[:70]})",
+    )
+    result = procedural.build_tool(pattern="voronoi", color_a="#885544")
+    check(
+        "_Procedural'" in result,
+        f"a material built from a pattern is marked too ({result[:70]})",
+    )
+    # The baked twin drops the marker.
+    source = bpy.data.materials.get("Wood_Procedural")
+    if source is None:
+        for candidate in bpy.data.materials:
+            if candidate.name.startswith("Wood_Procedural"):
+                source = candidate
+                break
+    check(source is not None, "the procedural material exists")
+    if source is not None:
+        folder = Path(baking.bake_folder_for(source))
+        check(
+            folder.name == "Wood_Bake",
+            f"the baked name drops the marker ({folder.name})",
+        )
+        check(
+            "procedural" not in folder.name.lower(),
+            "the word 'procedural' does not survive into the result",
+        )
+    # A copy of the same material ("Wood_Procedural.001") is the same wood.
+    copy = bpy.data.materials.new("Wood_Procedural.001")
+    check(
+        Path(baking.bake_folder_for(copy)).name == "Wood_Bake",
+        "a copy of the material bakes into the same folder",
+    )
+
+
+def part_bake_twice(baking):
+    print("\n== baking twice reads the source and reuses the material")
+    clean_scene()
+    obj, material = make_object("TwiceCube")
+    folder = Path(tempfile.mkdtemp(prefix="gaa_twice_")) / "TwiceCube_baked"
+
+    first = baking.bake_and_install(
+        obj, targets=("albedo",), size=32, samples=2, folder=str(folder)
+    )
+    check(first.get("ok") is True, f"the first bake finished ({first.get('error')})")
+    source = first.get("source_material")
+    check(source == material.name, f"the source is remembered ({source})")
+    check(
+        obj.active_material.name == first.get("material"),
+        "the object wears the baked material",
+    )
+
+    second = baking.bake_and_install(
+        obj, targets=("albedo",), size=32, samples=2, folder=str(folder)
+    )
+    check(
+        second.get("source_material") == material.name,
+        f"the second bake reads the source, not the result "
+        f"({second.get('source_material')})",
+    )
+    check(
+        second.get("material") == first.get("material"),
+        f"the material is reused ({second.get('material')})",
+    )
+    check(
+        bpy.data.materials.get(str(first.get("material")) + ".001") is None,
+        "no duplicate material was created",
+    )
+
+
+def part_naming(baking):
+    print("\n== the names of the baked files")
+    clean_scene()
+    obj, _mat = make_object("NamedCube")
+    folder = Path(tempfile.mkdtemp(prefix="gaa_name_")) / "NamedCube_baked"
+    report = baking.bake_and_install(
+        obj, targets=("albedo", "normal"), size=32, samples=2,
+        folder=str(folder), naming="game",
+    )
+    check(report.get("ok") is True, f"the bake finished ({report.get('error')})")
+    names = sorted(Path(path).name for path in report.get("files", []))
+    check(
+        all(name.endswith(("_col.png", "_nrm.png")) for name in names),
+        f"the game names are used ({names})",
+    )
+
+    folder2 = Path(tempfile.mkdtemp(prefix="gaa_name2_")) / "NamedCube_baked"
+    report2 = baking.bake_and_install(
+        obj, targets=("albedo",), size=32, samples=2,
+        folder=str(folder2), naming="readable",
+    )
+    names2 = sorted(Path(path).name for path in report2.get("files", []))
+    check(
+        all(name.endswith("_albedo.png") for name in names2),
+        f"the readable names are used ({names2})",
+    )
+
+
+def part_settings(baking):
+    print("\n== the bake settings live on the scene")
+    settings = baking.settings_from_scene(bpy.context.scene)
+    check(settings.size == 1024, f"the default size is 1024 ({settings.size})")
+    check(settings.samples == 16, f"the default samples is 16 ({settings.samples})")
+    check(settings.maps == "game", f"the default map set is 'game' ({settings.maps})")
+    check(
+        settings.naming == "game",
+        f"the default naming is the game one ({settings.naming})",
+    )
+    # A property on the operator would be thrown away on the next redraw; on
+    # the scene it survives.
+    bpy.context.scene.gaa_bake_size = 512
+    check(
+        baking.settings_from_scene(bpy.context.scene).size == 512,
+        "the size can be changed by hand and is kept",
+    )
+    bpy.context.scene.gaa_bake_size = 1024
+
+
 def part_atlas_bake(baking):
     print("\n== baking several objects into one atlas")
     clean_scene()
@@ -379,7 +537,7 @@ def part_tools(baking):
 
     result = tools.execute("bake.replace")
     check(result.ok, "the replace tool runs")
-    check("Baked" in result.report, f"the replace tool reports ({result.report[:70]})")
+    check("_Bake" in result.report, f"the replace tool reports ({result.report[:70]})")
 
     result = tools.execute("bake.atlas", {"maps": ["albedo"], "size": 32, "samples": 4})
     check(result.ok, "the atlas tool runs")
@@ -397,6 +555,11 @@ def main():
         part_check(baking)
         part_bake(baking)
         part_save(baking)
+        part_install(baking)
+        part_naming(baking)
+        part_names(baking, importlib.import_module("blender_addon.procedural"))
+        part_bake_twice(baking)
+        part_settings(baking)
         part_atlas_bake(baking)
         part_padding_check(baking)
         part_replace(baking)
