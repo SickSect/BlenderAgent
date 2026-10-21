@@ -1,159 +1,225 @@
-# codeagent
+# Asset Assistant
 
-A local multi-agent CLI code generator. It writes code, runs it, tests it, and
-fixes it — entirely on your machine, using open models via Ollama.
+An AI assistant for game assets that lives **inside Blender**.
 
-Most LLM tools stop at "generated". This one closes the loop: a tester agent
-writes real assertions, the code is executed in a sandbox, and a reviewer only
-approves when the tests actually pass.
+A chat in the sidebar that knows your scene, plus a set of deterministic
+tools — materials, textures, UV, baking, project hygiene — that the assistant
+can call on its own and that you can press yourself.
 
-## The loop
+The assistant does not draw. It does the mechanical part of an asset pipeline:
+it checks what is broken, wires the maps, unwraps, bakes and gets the project
+ready to hand over to a game engine.
 
-```
-planner -> coder -> tester -> executor -> reviewer -> fixer
-                                  ^                     |
-                                  +---------------------+
-                                   repeats until approved
-```
+---
 
-| Agent | Responsibility |
+## What it does
+
+| Area | What you get |
 |---|---|
-| **Planner** | Designs the file structure and plan; returns `{language, entry, files, plan}` |
-| **Coder** | Writes the full content of every file; returns `[{path, content}]` |
-| **Tester** | Writes a standalone test module that imports the generated code and asserts on it |
-| **Executor** | Lays all files out in a temp dir and runs the tests in isolation |
-| **Reviewer** | Gives a verdict based on the real execution results |
-| **Fixer** | Applies the review and returns the corrected file set |
+| **Materials** | audit and repair, build a PBR material from a folder of maps, assign to the selection, replace everywhere, instances, tinted variants, cleanup |
+| **Textures** | report, pack into the `.blend`, relative paths, relink lost files, fix colour spaces |
+| **UV** | texel-density audit, seams, unwrap, shared atlas, a kit for Aseprite/Krita |
+| **Baking** | procedural material → maps, shared atlas, normal map from a height map, plain material from the result |
+| **Procedural** | 16 recipes built from a description — always a valid node graph |
+| **Shader menu** | right-click a texture in the Shader Editor: fix its colour space, pack it, make its path relative, connect it to Base Color / Roughness / Normal |
+| **Project** | the whole folder → material → assign → pack → check in one call |
+
+**37 tools.** Every tool is written once and available in three places: as a
+button in the AI panel, as a call the model may make by name, and as a case in
+the headless test harness. **8 skills** carry the knowledge the model needs
+(exact socket names, colour spaces, PBR wiring, the procedural recipes).
+
+Two tools are destructive and never run on their own: the assistant asks, and
+the chat shows a **Run / Cancel** block.
+
+---
 
 ## Requirements
 
-- Python 3.11+
-- [Ollama](https://ollama.com/download) running locally with a code model pulled
-- Docker (optional — only for the isolated execution backend)
+- **Blender 4.2 or newer** (tested on 5.2 LTS).
+- **A model — one of two ways:**
+  - **local**: [Ollama](https://ollama.com/download) running on your machine
+    with a code model pulled:
+    ```bash
+    ollama pull qwen2.5-coder:7b
+    ```
+    Nothing leaves your computer.
+  - **or an API key**: any OpenAI-compatible endpoint — base URL, key and
+    model name. A hosted model is stronger on small tasks; a local one is
+    private and free.
+
+The backend is switched in the add-on preferences at any time.
+
+> The **deterministic half** of the add-on — the material doctor, the UV
+> audit, baking, packing, the export check — needs **no model at all**. Those
+> are plain buttons that run real Blender code.
+
+---
 
 ## Install
+
+### 1. Build the extension
 
 ```bash
 git clone <repo-url>
 cd CLI-code-agent
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-source .venv/bin/activate     # Linux / macOS
-pip install -e .
+python tools/build_addon.py          # -> dist/asset_assistant-0.5.9.zip
 ```
 
-Check the setup:
+Only the standard library is needed to build it.
 
-```bash
-codeagent doctor      # is Ollama reachable? is the model available?
-codeagent models      # list downloaded models
-```
+### 2. Install it in Blender
 
-## Usage
+*Edit → Preferences → Get Extensions → ▾ → Install from Disk*, pick the zip,
+enable **Asset Assistant**. (In 4.2–4.5 the legacy *Add-ons* tab takes the
+same zip.)
 
-### One-off task
+### 3. Point it at a model
 
-```bash
-codeagent run "write a factorial function" --exec -o result.py
-```
+*Edit → Preferences → Add-ons (or *Get Extensions*) → Asset Assistant*:
 
-### Interactive session
-
-```bash
-codeagent chat --exec
-```
-
-Inside a session:
-
-| Command | What it does |
+| Setting | Meaning |
 |---|---|
-| `<any text>` | Runs it as a task |
-| `/save <path>` | Writes all generated files to that folder |
-| `/new` | Clears the session context |
-| `/exit` | Ends the session |
+| **Language** | interface language (Russian or English) |
+| **Backend** | `Ollama` (local) or `OpenAI API` |
+| **Ollama host / model** | `http://localhost:11434` and the model you pulled |
+| **Base URL / API key / model** | for the API backend |
+| **Model context (`num_ctx`)** | the context window the model gets (16384 by default) |
+| **Context budget** | how many characters of the conversation are sent |
+| **Send the scene snapshot** | whether every request carries the state of your scene |
+| **Chat window width** | the width of the floating chat |
 
-The session keeps the previous task's files in context, so follow-ups like
-"now add a delete method" build on what was already generated. Use `/new` when
-switching to an unrelated task.
+### 4. Open it
 
-## Options
-
-| Flag | Default | Description |
-|---|---|---|
-| `--exec / --no-exec` | `--no-exec` | Actually run the generated code (otherwise static check only) |
-| `--backend` | `subprocess` | Where to run the code: `subprocess` or `docker` |
-| `-n, --iterations` | `5` | Max review/fix iterations |
-| `-t, --timeout` | `10` | Seconds before an execution is killed |
-| `-m, --model` | from config | Override the model |
-| `-q, --quiet` | off | Suppress step-by-step logs |
-
-## Execution safety
-
-Generated code is untrusted, so it never runs in the main process.
-
-**Subprocess backend** — throwaway temp dir, isolated interpreter (`python -I`),
-and on POSIX, hard limits on memory, CPU time and file size.
-
-**Docker backend** — a disposable container with no network (`--network none`),
-a memory cap, a process cap (`--pids-limit`), and the code mounted read-only.
-This is the stronger option: network and filesystem isolation cannot be achieved
-with a plain subprocess.
-
-## Configuration
-
-`src/codeagent/config.yaml` holds the model and host settings. Agent prompts
-live in `src/codeagent/system_prompts/` as Markdown — edit them to change how
-each agent behaves.
-
-## Blender add-on: Asset Assistant
-
-The project is being reoriented from a code-gen CLI into an AI asset helper.
-The first integration is a Blender 4.2+ extension: an **AI Assistant** tab in
-the 3D Viewport sidebar (`N` panel) with a chat that knows your current scene.
-
-> 📖 **Textbook (`docs/`).** A from-scratch, teacher-style walkthrough of the
-> code — Blender API basics, the add-on architecture, the chat/worker protocol,
-> running AI code safely, materials/texturing recipes with runnable examples,
-> the scene snapshot, Blender's window/editor system, and the skill library:
-> [`docs/`](docs/README.md). It is written in Russian.
-
-### Build & install
-
-```bash
-python tools/build_addon.py          # -> dist/asset_assistant-0.5.5.zip
-```
-
-Blender → *Edit → Preferences → Add-ons → Install from Disk*, pick the zip,
-enable the add-on, then configure it under the add-on's preferences:
-
-| Backend | Settings |
-|---|---|
-| **Ollama (local)** | host (default `http://localhost:11434`) + model, e.g. `qwen2.5-coder:7b` |
-| **External API** | OpenAI-compatible base URL + API key + model |
-
-The backend switch lives in the add-on preferences and can be flipped at any
-time; the API key is stored in Blender's preferences (plain text — prefer the
-local backend if that matters to you).
+- `N` in the 3D Viewport → the **AI** tab of the sidebar;
+- the same tab in the Shader Editor and the Image Editor;
+- `Ctrl+Alt+A` anywhere → the chat as a floating window.
 
 > 🧪 **See it working:** [`demo/README.md`](demo/README.md) is a step-by-step
-> walkthrough (for a Blender beginner) that opens a scene with deliberately
-> broken materials and shows the assistant finding them. The scene is
-> generated by `python tools/demo_scene.py`.
->
-> 📖 **What can it do?** [`docs/15-features-guide.md`](docs/15-features-guide.md)
-> is the practical guide: every button, every tool, the skills the assistant
-> knows, ready-to-paste questions and the honest limits.
->
-> 📖 **Step-by-step guides:** [`docs/21-baking-guide.md`](docs/21-baking-guide.md)
-> takes you from "a procedural material" to "a texture the game engine can
-> read", one button at a time — and lists the symptoms of the usual mistakes.
+> walkthrough for a Blender beginner (in Russian). It opens a scene with
+> deliberately broken materials and shows the assistant naming the problems the
+> snapshot finds. Generate the scene with `python tools/demo_scene.py`.
 
-### Skills
+---
 
-Beyond the prompt, the assistant has a small library of **skill** files
-(`src/blender_addon/skills/*.md`): Principled inputs, colour spaces, PBR maps,
-glass, metals, normal maps, ORM packing. The system prompt carries only a
-one-line catalog; when a task needs detail the model answers with
+## How it works
+
+```
+Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
+   (timers)      <--events.jsonl----   (own process)   <--stream--
+```
+
+- The assistant's requests run in a **separate worker process**. Blender's API
+  docs state that Python threads living past a script cause hard-to-diagnose
+  crashes, so the add-on never blocks and never spawns threads — a
+  `bpy.app.timers` callback polls two append-only JSONL files.
+- A compact **scene snapshot** travels with every request: objects,
+  transforms, polygons, UVs, modifiers, selection, plus per-material node,
+  shader and texture details and the image list. It *focuses* on what you are
+  working on: in the Shader Editor it details the material being edited, in the
+  Image Editor the texture.
+- A **Problems** section tells the model what it cannot see: texture files
+  that are gone from disk, data maps (roughness / metallic / normal) still in
+  `sRGB`, textured meshes without a UV layer.
+- The model may call a **tool** by name:
+  ````
+  ```tool
+  material.build_from_folder {"folder": "D:/textures/Wood_2k"}
+  ```
+  ````
+  The tool runs on the main thread and its report goes back into the model's
+  context, so the assistant reports *what actually happened* instead of
+  guessing.
+- The last ```python block of a reply can be executed right in the scene with
+  the **Run code** button.
+
+---
+
+## The tools
+
+### Materials
+
+| Tool | What it does |
+|---|---|
+| `material.audit` | Finds the mistakes that are invisible in the viewport: data maps in the wrong colour space, normal maps wired into Base Color, missing texture files, meshes without UVs, unused and duplicate materials |
+| `material.fix` | Applies the repairs that are safe: colour spaces, normal maps through a Normal Map node, an unconnected shader output. Nothing is deleted |
+| `material.build_from_folder` | Builds a PBR material from a folder of maps (albedo, normal, roughness, metallic, ORM, emission, height), assigns it to the active object, and reuses the material on a second run instead of making `Wood.001` |
+| `materials.assign_to_selection` | Puts a material on every selected object (the active slot is replaced, not appended) |
+| `materials.replace_everywhere` | Replaces a material across the scene **in the slots**, so the per-face assignments stay valid |
+| `materials.find_users` | Who uses this material: the object, the slot index and the number of faces in it |
+| `materials.make_instance` / `make_single_user` | Share one mesh between objects, and undo that |
+| `materials.make_variant` | A tinted copy of a material — an independent copy whose Base Color is multiplied by the tint |
+| `materials.cleanup_orphans` | Deletes unused materials and images. **Destructive** — the assistant asks first |
+
+### Textures
+
+| Tool | What it does |
+|---|---|
+| `textures.report` | Every texture with its size, colour space, whether it is packed and where its file is |
+| `textures.pack_all` | Packs every texture into the `.blend`, so the project travels with its textures |
+| `textures.unpack_all` | Writes the packed textures back to disk. **Destructive** — it can overwrite files |
+| `textures.make_relative` | Rewrites absolute texture paths as relative to the `.blend` |
+| `textures.relink` | Finds texture files that went missing and points the images at them again, by name |
+| `textures.fix_colorspace` | Sets every texture to the right colour space: `sRGB` for colour maps, `Non-Color` for data maps |
+
+### UV
+
+| Tool | What it does |
+|---|---|
+| `uv.audit` | Texel density in pixels per metre, overlapping islands, coordinates outside `[0,1]`, stretched triangles |
+| `uv.unwrap` / `uv.unwrap_own` | Unwraps with automatic seams, or leaves every island where it is (for baking) |
+| `uv.mark_seams` | By angle, by height (a horizontal cut — the way a sleeve needs one) or by the sharp edges |
+| `uv.build_atlas` | Lays the islands of several objects into one shared atlas with a gap and a padding |
+| `uv.match_density` | Brings every island to the same texel density, so the texture is equally sharp everywhere |
+| `uv.symmetric` | Unwraps symmetrically: the far half gets the UVs of its counterpart, so one painting serves both sides |
+| `uv.export_kit` / `uv.import_atlas` | The layout as a PNG plus a manifest, to paint in Aseprite or Krita and bring back — the UV coordinates are never touched |
+
+### Baking
+
+| Tool | What it does |
+|---|---|
+| `bake.check` | Whether the object can be baked: a UV layout without overlaps, a material, a source of height for the normal map |
+| `bake.maps` | Bakes the procedural material into albedo, normal, roughness and AO — then builds a plain material from the maps and puts it on the object. The maps are saved in a folder next to the `.blend` (`<Name>_Bake/`), so the same material can go on other objects |
+| `bake.atlas` | The same for several objects into one shared atlas |
+| `bake.normal_from_height` | A normal map from a height map: the height is differentiated into surface slopes, the way every normal map expects |
+| `bake.replace` | Builds a plain material from the already baked maps and swaps it in |
+
+### Procedural materials
+
+| Tool | What it does |
+|---|---|
+| `procedural.find` | Finds the recipes that match the user's words — the matching happens in the code, not in the model's memory |
+| `procedural.list` | The whole catalogue with the pattern of each recipe |
+| `procedural.build` | Builds a material from a recipe plus overrides, or from explicit parameters. The graph is always valid: the assistant picks the numbers, the add-on assembles the nodes |
+
+16 recipes: wood, marble, stone, concrete, rust, brushed metal, fabric, leather,
+paper, snow, lava, plastic, checker, **brick**, **tile**, **cobble**.
+
+### Project and export
+
+| Tool | What it does |
+|---|---|
+| `project.import_textures` | The whole workflow in one step: scan a folder of maps, build the PBR material, assign it, pack the textures and check that the project is ready to hand off |
+| `export.check_export` | Whether the project is ready for glTF/FBX: lost files, unpacked textures, meshes without UVs, shaders the exporter cannot express, textures that are too large |
+
+### The assistant's own tools
+
+| Tool | What it does |
+|---|---|
+| `tools.list` | What the add-on can do — the catalogue of tools and the skills |
+| `tools.history` | What has already been done to the scene during this conversation, with the reports |
+
+---
+
+## Skills
+
+Skills are knowledge; tools are actions. A skill is a markdown file
+(`src/blender_addon/skills/*.md`) with a small front-matter block: the
+Principled inputs of Blender 4.x/5.x, colour spaces, PBR map wiring, glass,
+metals, normal maps, ORM packing, procedural recipes.
+
+The system prompt always carries a one-line catalogue of them. When a task
+needs detail, the model answers with
 
 ````
 ```skill
@@ -162,259 +228,15 @@ material-glass
 ````
 
 and the add-on appends that instruction to the prompt and asks again (at most
-two such round trips per question). Skill code samples are executed inside
-Blender by `tests/run_skills_check.py`, so they cannot silently drift away from
+two such round trips per question). Skills are also attached **automatically**:
+the add-on matches their keywords against your message, so "make a glass
+material" gets the glass recipe in the very first request.
+
+Every code sample inside a skill is executed inside Blender by
+`tests/run_skills_check.py`, so an instruction cannot silently drift away from
 the API.
 
-Skills can also be attached **automatically**: the add-on matches the `keywords`
-of the library against your message, so "make a glass material" gets the glass
-recipe in the first request instead of after an extra round trip.
-
-### Tools
-
-Skills are knowledge; **tools** are actions. Every tool is written once and
-available in three places:
-
-* as a **button** in the AI panel,
-* as a **call the model may request** by name (a text protocol, because local
-  models rarely support native tool-calling),
-* as a **target of the headless test harness** (`tests/run_tools_check.py`),
-  which runs every tool on a synthetic scene in `--background` — a tool that
-  breaks Blender never ships.
-
-The first tool, `material.build_from_folder`, is the existing "PBR from folder"
-button: the button and the model call literally the same function.
-
-The model calls a tool like this:
-
-````
-```tool
-material.build_from_folder {"folder": "D:/textures/Wood_2k"}
-```
-````
-
-The tool runs on the main thread, and its report is fed back into the model's
-context, so the assistant reports *what actually happened* instead of guessing.
-Destructive tools are declared as such in the registry and are not run
-automatically — the model is told to ask the user to press the button.
-
-### Interface language
-
-The add-on UI is bilingual (**RU / EN**). Switch it under *Preferences →
-Add-ons → Asset Assistant → Interface language*; the assistant is asked to
-answer in the same language (there are two system prompts). All strings live in
-`src/blender_addon/i18n.py`, so adding a language means adding one dict to
-`i18n.STRINGS` plus one item to the `language` enum. Operator labels/tooltips
-are RNA-baked and re-registered on the switch; a few preference tooltips stay
-bilingual because Blender bakes them at registration time.
-
-### Chat window & running code
-
-- The chat is **docked in three places** (one shared state, one `AI` tab):
-  3D Viewport sidebar (`N`), Shader/Node Editor sidebar and Image/UV Editor
-  sidebar. `Ctrl+Alt+A` or the "Chat window" button opens it as a **floating
-  popup** next to the mouse cursor; `Esc` or a click outside closes it.
-- Popup width is configurable: *Preferences → Add-ons → Asset Assistant →
-  Chat window width* (300–1400 px, default 560); text wrapping follows it.
-- When a reply contains a ` ```python ` block, it appears in an "AI code ready
-  to run" box with two buttons: **Run code** runs it in the current scene on
-  the main thread (stdout and tracebacks are reported back into the chat),
-  **To Text Editor** stores it in an `AI Assistant Code` text datablock.
-
-### Material shortcuts
-
-Two one-click buttons jump straight from the chat to the editor that matters for
-the active object's material:
-
-- **Shader Editor** — shows the material's node tree (`shader_type = OBJECT`,
-  follows the active object).
-- **Image Editor** — shows the material's first texture (or `Render Result`, or
-  the file's first image) if the material has no textures.
-
-Both reuse an already-open editor when there is one, otherwise repurpose the
-largest area that is *not* the one the button was clicked from, so the sidebar
-hosting the chat is never replaced. If the active object has no material, the
-editor still opens and the status bar says so. See
-[`docs/08-windows-and-editors.md`](docs/08-windows-and-editors.md).
-
-Below the input, a **Material presets** block offers ready-made requests and one
-one-click action:
-
-- **Presets** (Matte / Metal / Glass / Emission / PBR) fill the input with a
-  ready-made request — a starting point you can edit before sending. They are
-  localized; PBR asks for albedo as color and the data maps as `Non-Color`. See
-  [`docs/09-presets-and-operator-props.md`](docs/09-presets-and-operator-props.md).
-- **PBR from folder** builds the material itself: pick a texture folder and the
-  add-on guesses each map's role from its file name (`albedo`/`base`, `normal`,
-  `roughness`, `metallic`, packed `ORM`, `emission`, `height`), loads the images
-  with the right colour space (colour maps as `sRGB`, data maps as `Non-Color`),
-  wires a Principled BSDF node tree and assigns it to the active object. No model
-  call involved. See
-  [`docs/10-pbr-from-folder.md`](docs/10-pbr-from-folder.md).
-
-### Running AI code safely
-
-AI code is arbitrary Python, so the add-on does a few things to keep it
-predictable:
-
-- **Real viewport context.** The script runs inside a `temp_override` bound to a
-  real 3D viewport (window/screen/area/region/space/view layer), so
-  context-sensitive operators such as `bpy.ops.object.duplicate` behave exactly
-  as if you pressed the hotkey. Running them from the chat popup's UI region could
-  otherwise leave the dependency graph in a state Blender crashes on later
-  (`DepsgraphNodeBuilder::build_materials` access violation).
-- **Immediate graph rebuild.** `view_layer.update()` runs right after the script,
-  while the good context is still active, instead of leaving a transient state for
-  the event loop.
-- **Undoable.** *Run code* is an `UNDO` operator, so the whole script is one
-  `Ctrl+Z` step.
-- **One-shot.** The block can be run once per reply (the button is replaced by a
-  "Ran · Ctrl+Z to undo" label). Re-running the same reply used to duplicate the
-  cube again and again — ask the assistant for a fresh answer to run something
-  anew.
-- Still, this is *arbitrary* code inside Blender: save your file before running
-  anything destructive, and prefer `Ctrl+Z` if the result is not what you wanted.
-
-### Worker lifecycle
-
-The sidecar worker is a child process. If Blender dies hard (a crash runs no
-cleanup), the worker notices through a parent-pid watchdog and exits on its own,
-and it is started with its working directory in a temp folder — never inside the
-add-on directory, which a lingering worker would otherwise keep locked and make
-reinstalling the extension fail with `Access is denied`.
-
-### Troubleshooting: Blender crashed after running AI code
-
-**Symptoms.** Blender closes *after* the assistant's script has finished, not while
-it runs. The crash report (Windows: `%TEMP%`, `blender.crash.txt`) shows an access
-violation in `DepsgraphNodeBuilder::build_materials` with an **empty** Python
-backtrace. That points at Blender's C++ dependency-graph rebuild, not at the Python
-code.
-
-**What the add-on already does to avoid it:**
-
-- runs the script inside a real 3D viewport context (`temp_override`) — see
-  [Running AI code safely](#running-ai-code-safely);
-- calls `view_layer.update()` right after the script;
-- makes *Run code* an `UNDO` operator and a one-shot button.
-
-**If you still hit a crash:**
-
-1. **Save the file first** (`Ctrl+S`) — the add-on cannot undo a hard crash.
-2. Copy the crash log (Windows `%TEMP%\blender.crash.txt`; on Linux/macOS run
-   Blender with `--debug` and capture the backtrace).
-3. Note what triggered it — which reply, which script, how many times *Run code*
-   was pressed — and file it in the Blender issue tracker: this is a
-   dependency-graph crash in Blender that reproduces outside the add-on.
-4. Workaround: ask for a **fresh answer** (the button is one-shot on purpose) and
-   prefer data-API operations (`bpy.data…`, `collection.link()`) over
-   context-sensitive operators (`bpy.ops…`) in generated code.
-
-#### A lingering worker holds the extension folder
-
-If installing the extension fails with `[WinError 5] Access is denied`, a worker
-from a crashed Blender may still be alive. Find it:
-
-```powershell
-Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-  Where-Object { $_.CommandLine -like "*asset_core*worker.py*" } |
-  Select-Object ProcessId, CommandLine
-```
-
-Kill the reported PID(s), then reinstall. (The parent-pid watchdog normally makes
-this unnecessary — it only happens if the watchdog could not start.)
-
-### How it works
-
-```
-Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
-   (timers)       <--events.jsonl---  (own process)   <--stream--
-```
-
-- Requests are executed in a **separate worker process** (`asset_core/worker.py`).
-  Blender's API docs state that Python threads living past a script cause
-  hard-to-diagnose crashes, so the add-on never blocks and never spawns threads —
-  a `bpy.app.timers` callback polls two append-only JSONL files.
-- A compact **scene snapshot** (objects, transforms, polygons, UV, modifiers,
-  selection, plus per-material node/shader/texture details and the image list)
-  is injected into every request, so the model answers about *your* scene.
-  Toggleable in preferences.
-- The snapshot **focuses on what you are working on**: in the Shader Editor it
-  details the material being edited (every node, every link, the texture list,
-  the users), in the Image Editor the texture, in the 3D viewport the scene.
-  It also reports what you have selected and which node is active.
-- A **`Problems`** section tells the model what it cannot see: texture files
-  that are gone from disk, data maps (roughness/metallic/normal) still in
-  `sRGB`, and textured meshes without a UV layer.
-- A **material doctor** finds the mistakes that are invisible in the viewport —
-  and repairs the ones that can be repaired safely. The findings are one
-  source of truth: the chat panel, the buttons and the model's snapshot all
-  read the same audit.
-- **Texture tools** make a project travel: pack every texture into the `.blend`,
-  make the paths relative, and find lost files again by name.
-- **Mass operations** cover the bookkeeping: put a material on the whole
-  selection, swap one material for another across the scene, list who still
-  uses it, make objects share a mesh, or derive a tinted variant.
-- **One-click workflow**: pick a texture folder and the add-on builds the
-  material, assigns it, packs the textures and checks that the project can
-  leave this machine — one click, one undo step, one report.
-- **UV analysis** measures the one UV problem that is invisible in the editor
-  and very visible in a game: **texel density** in pixels per metre, plus
-  overlapping islands, coordinates outside [0,1] and stretched triangles.
-- **UV tools**: mark the seams by angle, unwrap, pack the islands, match the
-  texel density, build a shared atlas with padding, and export a **UV kit**
-  (layout PNG + manifest) to paint in Aseprite or Krita and import back —
-  the UV coordinates are never touched, so the picture lands exactly where the
-  layout said it would.
-- **Baking** turns a procedural material into textures a game engine can read.
-  It sets up everything Cycles needs (engine, target images, the active node),
-  bakes, and removes its temporary nodes afterwards.
-- **Normal maps from a height map** — the height is differentiated into surface
-  slopes, the way xNormal and Substance do it, without leaving Blender.
-- **Procedural materials** are built from a *description*: the assistant picks
-  a recipe and the numbers, the add-on assembles the node graph — so the
-  result is always valid and always the same. Thirteen recipes (wood, marble,
-  rust, fabric, lava...) and twenty tunable parameters.
-- **The shader editor context menu** repairs a texture where the problem is:
-  right-click an Image Texture to fix its colour space, pack it, make its path
-  relative or connect it to Base Color / Roughness / Normal.
-- Destructive actions never run on their own: the assistant asks, and the chat
-  shows a **Run / Cancel** block. The turn stays open until you decide, and the
-  assistant gets the result either way.
-- Skills can now be **attached automatically**: the add-on matches the
-  `keywords` of the skill library against your message, so "make a glass
-  material" gets the glass recipe in the first request instead of after an
-  extra round trip.
-- `asset_core/` is Blender-independent (stdlib only) and is vendored into the
-  extension zip by `tools/build_addon.py`.
-- **Skills**: verified instruction packs (`skills/*.md`) the model can pull in
-  on demand. The system prompt always carries a one-line catalog; when a task
-  needs detail the model answers with a ```skill``` block, the add-on appends
-  that instruction to the prompt and asks again. Bodies are written in English
-  (half the tokens, and the model knows the API better in English), live in git,
-  and every ```python block in them is executed by `tests/run_skills_check.py`
-  on the running Blender — a renamed socket is caught before a user sees it.
-
-### Roadmap for the add-on
-
-- Materials & texturing through the assistant (in progress): the scene snapshot
-  now covers materials and images, the chat can open the Shader/Image editor on
-  the active material, "PBR from folder" builds a textured material in one
-  click, and skills ship verified recipes for glass, metals, normal maps, ORM
-  packs and colour spaces. Still to come: node quick actions,
-  generating/packing/backing textures.
-- Tool-calling over the JSONL channel: real `bpy` tools (create/modify objects,
-  materials, export) executed on the main thread with confirmation for
-  destructive operations, plus teaching the model to use extra add-ons. The
-  skill protocol is the first half of this.
-- The full step-by-step plan for the materials/texturing work — the pain
-  points, what gets automated, and in which order — lives in
-  [`docs/12-materials-roadmap.md`](docs/12-materials-roadmap.md). Its first
-  milestones: a shared `api.py` of version-tolerant bpy helpers, a `tools.py`
-  registry (button + model call + headless test), a "material doctor" that
-  finds wrong colour spaces, normal maps wired into Base Color, missing
-  texture files and unpacked images, and a tool-call loop that feeds the
-  execution result back into the model's context.
+---
 
 ## Tests
 
@@ -422,54 +244,82 @@ Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
 pytest -q
 ```
 
-The skill library has two levels of checks; the second one needs Blender and
-executes every code sample the assistant can be handed:
-
-```bash
-blender --background --factory-startup --python tests/run_skills_check.py
-```
-
-The UI has its own check: the panel is only drawn in a window, so a wrong icon
-or a typo in an operator id stays invisible to every other test — and then the
-whole chat panel dies on the first redraw. `tests/run_ui_check.py` compares the
-icons and the operator ids in the UI with what the running Blender offers.
-
-The same idea for tools, for the scene snapshot and for the material doctor —
-all of them run the real code on the real Blender:
+The add-on has its own harness: every check runs the **real** code on the
+**real** Blender, in `--background`, on a synthetic scene.
 
 ```bash
 blender --background --factory-startup --python tests/run_tools_check.py
-blender --background --factory-startup --python tests/run_snapshot_check.py
+blender --background --factory-startup --python tests/run_skills_check.py
+blender --background --factory-startup --python tests/run_procedural_check.py
+blender --background --factory-startup --python tests/run_baking_check.py
+blender --background --factory-startup --python tests/run_uv_check.py
 blender --background --factory-startup --python tests/run_doctor_check.py
 blender --background --factory-startup --python tests/run_textures_check.py
 blender --background --factory-startup --python tests/run_bulk_check.py
 blender --background --factory-startup --python tests/run_project_check.py
 blender --background --factory-startup --python tests/run_confirm_check.py
-blender --background --factory-startup --python tests/run_uv_check.py
 blender --background --factory-startup --python tests/run_exchange_check.py
-blender --background --factory-startup --python tests/run_baking_check.py
 blender --background --factory-startup --python tests/run_heightmap_check.py
-blender --background --factory-startup --python tests/run_procedural_check.py
+blender --background --factory-startup --python tests/run_snapshot_check.py
+blender --background --factory-startup --python tests/run_ui_check.py
 ```
 
-Integration tests need a running Ollama and are skipped by default:
+The UI has its own check: the panel is only drawn in a window, so a wrong icon
+or a typo in an operator id stays invisible to every other test — and then the
+whole panel dies on the first redraw. `run_ui_check.py` compares the icons and
+the operator ids in the UI with what the running Blender offers.
 
-```bash
-RUN_INTEGRATION=1 pytest -q
-```
+---
 
-Docker tests skip automatically when Docker is unavailable.
+## 📖 The textbook
 
-## Current limitations
+[`docs/`](docs/README.md) is a teacher-style walkthrough of the whole code —
+Blender API basics, the architecture, the chat/worker protocol, running AI code
+safely, materials and textures, the scene snapshot, the skill library, the
+doctor, UV, baking. It is written in Russian and meant to be read, not
+skimmed.
 
-- Flat file structure only — no nested folders yet
-- Static validation implemented for Python; other languages are rejected rather
-  than validated
-- The Docker backend runs Python only
+Start with the [features guide](docs/15-features-guide.md) if you want to know
+what to press.
+
+---
 
 ## Roadmap
 
-- Nested folders and richer project layouts
-- Static validation and execution for languages beyond Python
-- Better review quality and smarter diffs
-- Full session history, not just the previous task's files
+**Done** — the materials-and-textures line: the focused scene snapshot, the
+doctor, the tool registry, skills, texture hygiene, bulk operations, the UV
+toolbox, the baking pipeline, the confirmation dialog, the project pipeline.
+
+**Next — the export itself.** The add-on checks that the project is ready for
+glTF/FBX but does not export. One button ("export the selected objects with
+the settings a game needs") closes the loop from *a folder of textures* to *a
+file the engine opens*.
+
+**Then**
+- several tool calls per answer instead of one round trip each;
+- the assistant learns to drive other add-ons;
+- the procedural recipes grow (and the model picks them better).
+
+**Known rough edge:** on a small local model the assistant is not yet reliable
+at *choosing* a material recipe. The deterministic half of the add-on does not
+depend on that.
+
+---
+
+## Repository layout
+
+```
+src/blender_addon/     the add-on (runs inside Blender)
+src/asset_core/        the worker: Blender-independent, stdlib only
+tools/build_addon.py   builds the installable zip
+docs/                  the textbook (Russian)
+demo/                  a demo scene and its walkthrough
+tests/                 the headless harness
+```
+
+The repository also contains the earlier project (`src/codeagent/`, a local
+multi-agent CLI code generator). It is no longer the focus; the add-on is.
+
+## License
+
+MIT.
