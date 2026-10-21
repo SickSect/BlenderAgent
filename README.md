@@ -317,7 +317,10 @@ file the engine opens*.
 **Then**
 - several tool calls per answer instead of one round trip each;
 - the assistant learns to drive other add-ons;
-- the procedural recipes grow (and the model picks them better).
+- the procedural recipes grow (and the model picks them better);
+- **transferring Mixamo animations to your own rig** — the plan, the three
+  possible ways and the estimate live in
+  [`docs/23-animation-roadmap.md`](docs/23-animation-roadmap.md).
 
 **Known rough edge:** on a small local model the assistant is not yet reliable
 at *choosing* a material recipe. The deterministic half of the add-on does not
