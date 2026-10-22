@@ -265,6 +265,116 @@ def assign_material(obj, material) -> str:
     return obj.name
 
 
+def apply_textures_from_folder(folder: str, objects=None) -> dict:
+    """Apply texture maps from *folder* to materials of *objects*.
+
+    For each material of the given objects (or all objects with materials),
+    finds matching textures in *folder* by name and connects them to
+    corresponding Principled BSDF sockets. Returns a dict with ``ok``,
+    ``assigned`` count and ``folder``.
+    """
+    maps = find_map_candidates(folder)
+    if not maps:
+        return {"ok": False, "error": "no maps found", "assigned": 0}
+
+    if objects is None:
+        objects = [
+            o
+            for o in bpy.context.scene.objects
+            if o.type == "MESH" and o.data.materials
+        ]
+    else:
+        objects = [o for o in objects if o.type == "MESH" and o.data.materials]
+
+    assigned_count = 0
+    for obj in objects:
+        for slot in obj.data.materials:
+            mat = slot.material
+            if mat is None:
+                continue
+            if _apply_maps_to_material(mat, maps):
+                assigned_count += 1
+
+    return {"ok": True, "assigned": assigned_count, "folder": folder}
+
+
+def _apply_maps_to_material(mat, maps) -> bool:
+    """Apply texture maps from *maps* to *mat*.
+
+    Finds or creates ShaderNodeTexImage nodes for each role and connects them
+    to the matching Principled BSDF inputs (Base Color, Roughness, Metallic,
+    Normal Map → Normal, ORM → Roughness/Metallic via Separate Color,
+    Emission Color, Height → Bump → Displacement/Normal).
+    """
+    tree = mat.node_tree
+    if tree is None:
+        mat.use_nodes = True
+        tree = mat.node_tree
+    nodes, links = tree.nodes, tree.links
+
+    bsdf = next((n for n in nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None:
+        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+        bsdf.name = "Principled BSDF"
+
+    changed = False
+
+    for role, path in maps.items():
+        # Find an existing unused image texture node or create a new one.
+        tex_node = None
+        for node in tree.nodes:
+            if node.type == "ShaderNodeTexImage" and node.image is None:
+                tex_node = node
+                break
+
+        if tex_node is None:
+            tex_node = nodes.new("ShaderNodeTexImage")
+            tex_node.name = f"{role}_texture"
+            tex_node.label = f"{role} texture"
+
+        # Load image (reuse already loaded image datablock if possible).
+        image = bpy.data.images.get(path)
+        if image is None:
+            image = bpy.data.images.load(path)
+        tex_node.image = image
+
+        # Set colour space: data maps must be Non-Color.
+        if role in ("rough", "metal", "normal", "orm", "height", "alpha"):
+            image.colorspace_settings.name = "Non-Color"
+        else:
+            image.colorspace_settings.name = "sRGB"
+
+        # Link to the appropriate BSDF input.
+        if role == "base":
+            _link(links, tex_node, "Color", bsdf, "Base Color")
+        elif role == "rough":
+            _link(links, tex_node, "Color", bsdf, "Roughness")
+        elif role == "metal":
+            _link(links, tex_node, "Color", bsdf, "Metallic")
+        elif role == "normal":
+            normal_map = nodes.new("ShaderNodeNormalMap")
+            normal_map.name = "Normal Map"
+            _link(links, tex_node, "Color", normal_map, "Color")
+            _link(links, normal_map, "Normal", bsdf, "Normal")
+        elif role == "orm":
+            sep = nodes.new("ShaderNodeSeparateColor")
+            sep.name = "Separate Color"
+            _link(links, tex_node, "Color", sep, "Color")
+            _link(links, sep, "Green", bsdf, "Roughness")
+            _link(links, sep, "Blue", bsdf, "Metallic")
+        elif role == "emit":
+            _link(links, tex_node, "Color", bsdf, "Emission Color")
+        elif role == "height":
+            bump = nodes.new("ShaderNodeBump")
+            bump.name = "Height to Normal"
+            _link(links, tex_node, "Color", bump, "Height")
+            _link(links, bump, "Height", bsdf, "Displacement")
+
+        changed = True
+
+    return changed
+
+
 def build_pbr_from_folder(directory: str, assign_to=None):
     """Build a PBR material from the texture maps in ``directory``.
 

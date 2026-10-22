@@ -774,6 +774,45 @@ class GAA_OT_pbr_from_folder(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GAA_OT_apply_textures_from_folder(bpy.types.Operator):
+    """Собрать PBR-материалы из текстур в выбранной папке и применить к объектам"""
+
+    bl_idname = "gaa.apply_textures_from_folder"
+    bl_label = "Применить текстуры из папки"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: StringProperty(subtype="DIR_PATH")
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if not self.filepath:
+            self.report({"WARNING"}, i18n.T("msg.pbr_no_folder"))
+            return {"CANCELLED"}
+        try:
+            result = materials.apply_textures_from_folder(self.filepath)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("textures.apply_failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not result.get("ok"):
+            self.report({"ERROR"}, i18n.T("textures.apply_failed", exc=result.get("error", "")))
+            return {"CANCELLED"}
+
+        message = i18n.T(
+            "textures.applied",
+            name=material_name,
+            n=result.get("assigned", 0),
+            folder=self.filepath,
+        )
+        self.report({"INFO"}, message)
+        state.add_display("result", message)
+        state._redraw()
+        return {"FINISHED"}
+
+
 def _doctor_report(findings) -> str:
     """The findings as a chat message: a title, the counts and the list."""
     counts = doctor.summary(findings)

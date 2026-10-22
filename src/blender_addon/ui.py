@@ -216,6 +216,10 @@ def draw_chat(
     # above only *asks* the assistant to do it; this button does it itself.
     box.operator("gaa.pbr_from_folder", icon="FILE_FOLDER")
 
+    # Apply textures from folder to existing materials on selected objects.
+    row = box.row(align=True)
+    row.operator("gaa.apply_textures_from_folder", icon="IMPORT")
+
     # The material doctor: find what is wrong with the materials of the
     # scene. The second button applies the repairs it can make on its own.
     row = box.row(align=True)
