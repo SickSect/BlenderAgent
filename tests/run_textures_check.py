@@ -240,6 +240,64 @@ def part_tools(tools, textures):
     check("Textures" in result.report, f"the report tool answers: {result.report[:60]}")
 
 
+def part_apply_from_folder(materials):
+    print("\n== applying a folder of maps to existing materials")
+    folder = Path(tempfile.mkdtemp(prefix="gaa_apply_"))
+    write_png(folder / "Wood_BaseColor.png", "Wood_BaseColor")
+    write_png(folder / "Wood_Roughness.png", "Wood_Roughness")
+    write_png(folder / "Wood_Normal.png", "Wood_Normal")
+
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.active_object
+    obj.name = "Textured"
+    mat = bpy.data.materials.new("TexturedMat")
+    mat.use_nodes = True
+    obj.data.materials.append(mat)
+
+    result = materials.apply_textures_from_folder(str(folder), [obj])
+    check(result.get("ok") is True, f"the apply runs ({result.get('error')})")
+    check(result.get("assigned") == 1, f"one material was wired ({result.get('assigned')})")
+    check(result.get("objects") == 1, "one object was touched")
+    check(
+        result.get("maps") == ["base", "normal", "rough"],
+        f"the maps are found by role ({result.get('maps')})",
+    )
+
+    tree = mat.node_tree
+    bsdf = next(n for n in tree.nodes if n.type == "BSDF_PRINCIPLED")
+    check(bool(bsdf.inputs["Base Color"].links), "Base Color is wired")
+    check(bool(bsdf.inputs["Roughness"].links), "Roughness is wired")
+    check(bool(bsdf.inputs["Normal"].links), "Normal is wired through a node")
+
+    base = tree.nodes.get("base_texture")
+    rough = tree.nodes.get("rough_texture")
+    check(base is not None and base.image is not None, "the colour node has its image")
+    check(
+        base is not None and base.image.colorspace_settings.name == "sRGB",
+        "the colour map stays sRGB",
+    )
+    check(
+        rough is not None
+        and rough.image is not None
+        and rough.image.colorspace_settings.name == "Non-Color",
+        "the roughness map is Non-Color",
+    )
+
+    nodes_before = len(tree.nodes)
+    again = materials.apply_textures_from_folder(str(folder), [obj])
+    check(
+        again.get("ok") is True and len(tree.nodes) == nodes_before,
+        "a second run reuses its nodes instead of stacking new ones",
+    )
+
+    empty = Path(tempfile.mkdtemp(prefix="gaa_apply_empty_"))
+    missing = materials.apply_textures_from_folder(str(empty), [obj])
+    check(
+        missing.get("ok") is False and missing.get("error") == "no maps found",
+        "an empty folder is refused",
+    )
+
+
 # -- runner -----------------------------------------------------------------
 
 
@@ -249,6 +307,7 @@ def main():
     try:
         textures = importlib.import_module("blender_addon.textures")
         tools = importlib.import_module("blender_addon.tools")
+        materials = importlib.import_module("blender_addon.materials")
 
         workspace, tex_dir, blend, good, absolute, lost = build_project()
         part_report(textures, good, absolute, lost)
@@ -257,6 +316,7 @@ def main():
         part_pack(textures, good, absolute, lost)
         part_paths(textures, good, absolute, lost, blend)
         part_relink(textures, good, absolute, lost, workspace)
+        part_apply_from_folder(materials)
         part_tools(tools, textures)
     finally:
         package.unregister()

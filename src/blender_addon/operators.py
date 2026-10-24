@@ -791,21 +791,41 @@ class GAA_OT_apply_textures_from_folder(bpy.types.Operator):
         if not self.filepath:
             self.report({"WARNING"}, i18n.T("msg.pbr_no_folder"))
             return {"CANCELLED"}
+        # The button says "selected objects"; when nothing is selected the
+        # function falls back to every mesh with materials, which is what the
+        # "apply to the whole scene" workflow expects.
+        selected = [
+            obj
+            for obj in context.selected_objects
+            if obj.type == "MESH" and obj.data.materials
+        ]
         try:
-            result = materials.apply_textures_from_folder(self.filepath)
+            result = materials.apply_textures_from_folder(
+                self.filepath, selected or None
+            )
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, i18n.T("textures.apply_failed", exc=exc))
             return {"CANCELLED"}
 
         if not result.get("ok"):
-            self.report({"ERROR"}, i18n.T("textures.apply_failed", exc=result.get("error", "")))
+            if result.get("error") == "no maps found":
+                message = i18n.T("textures.apply_no_maps")
+            else:
+                message = i18n.T(
+                    "textures.apply_failed", exc=result.get("error", "")
+                )
+            self.report({"ERROR"}, message)
+            state.add_display("error", message)
+            state._redraw()
             return {"CANCELLED"}
 
+        folder = Path(self.filepath.rstrip("/\\")).name or self.filepath
         message = i18n.T(
             "textures.applied",
-            name=material_name,
-            n=result.get("assigned", 0),
-            folder=self.filepath,
+            maps=len(result.get("maps", [])),
+            materials=result.get("assigned", 0),
+            objects=result.get("objects", 0),
+            folder=folder,
         )
         self.report({"INFO"}, message)
         state.add_display("result", message)
@@ -1119,6 +1139,7 @@ class GAA_OT_export_asset(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def execute(self, context):
+        # export.export() turns a file path into its folder and creates it.
         folder = self.filepath or export._default_folder()
         result = export.export(folder, self.format, strict=False)
         report = export._report(result)
@@ -1314,6 +1335,79 @@ class GAA_OT_match_density(bpy.types.Operator):
             )
         state.add_display("result", "\n".join(lines))
         self.report({"INFO"}, i18n.T("uv.density_done", n=len(done)))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_fix_uv_overlap(bpy.types.Operator):
+    """Раздвинуть перекрывающиеся UV-острова, не пересобирая раскладку"""
+
+    bl_idname = "gaa.fix_uv_overlap"
+    bl_label = "Исправить перекрытие UV"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        context.view_layer.update()
+        targets = uv.scope_objects(context)
+        if not targets:
+            self.report({"WARNING"}, i18n.T("uv.no_meshes"))
+            return {"CANCELLED"}
+
+        # The repair writes the mesh through bmesh; that has to happen in
+        # Object Mode, otherwise Blender keeps the edit-mode copy and the
+        # write is lost.
+        if context.mode != "OBJECT":
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:  # noqa: BLE001 - no active mesh to leave
+                pass
+
+        try:
+            settings = uv.settings_from_scene(context.scene)
+            reports = uv.repair_overlap_scene(targets, settings.margin)
+        except Exception as exc:  # noqa: BLE001 - a bad mesh must not kill the UI
+            self.report({"ERROR"}, i18n.T("uv.failed", exc=exc))
+            return {"CANCELLED"}
+
+        done = [r for r in reports if r.get("ok")]
+        failed = [r for r in reports if not r.get("ok")]
+        changed = [r for r in done if r.get("changed")]
+        before = sum(r.get("pairs_before", 0) for r in done)
+        after = sum(r.get("pairs_after", 0) for r in done)
+
+        lines = []
+        if before == 0:
+            lines.append(i18n.T("uv.overlap_none"))
+        else:
+            lines.append(
+                i18n.T(
+                    "uv.overlap_fixed",
+                    pairs=before - after,
+                    objects=len(changed),
+                )
+            )
+            if after:
+                lines.append(i18n.T("uv.overlap_left", n=after))
+            scaled = [
+                r for r in done if r.get("scale", 1.0) < 0.999
+            ]
+            if scaled:
+                factor = min(r["scale"] for r in scaled)
+                lines.append(i18n.T("uv.overlap_scaled", factor=f"{factor:.3f}"))
+        for report in failed:
+            lines.append(
+                i18n.T(
+                    "uv.overlap_failed",
+                    name=report.get("object", "?"),
+                    error=report.get("error", "failed"),
+                )
+            )
+
+        state.add_display("result", "\n".join(lines))
+        self.report(
+            {"INFO"},
+            i18n.T("uv.overlap_done", before=before, after=after),
+        )
         state._redraw()
         return {"FINISHED"}
 
@@ -1815,6 +1909,7 @@ _classes = (
     GAA_OT_open_help,
     GAA_OT_use_preset,
     GAA_OT_pbr_from_folder,
+    GAA_OT_apply_textures_from_folder,
     GAA_OT_material_doctor,
     GAA_OT_material_fix,
     GAA_OT_pack_textures,
@@ -1844,6 +1939,7 @@ _classes = (
     GAA_OT_node_set_roughness,
     GAA_OT_node_set_normal,
     GAA_OT_procedural_build,
+    GAA_OT_fix_uv_overlap,
 )
 
 # bl_label and the class docstring (Blender's tooltip) are copied into RNA at
@@ -1861,6 +1957,7 @@ _OPERATOR_KEYS = {
     "gaa.open_text_editor": "op.open_text",
     "gaa.use_preset": "op.use_preset",
     "gaa.pbr_from_folder": "op.pbr_folder",
+    "gaa.apply_textures_from_folder": "op.apply_textures_folder",
     "gaa.material_doctor": "op.material_doctor",
     "gaa.material_fix": "op.material_fix",
     "gaa.pack_textures": "op.pack_textures",
@@ -1875,6 +1972,7 @@ _OPERATOR_KEYS = {
     "gaa.check_uv": "op.check_uv",
     "gaa.unwrap_uv": "op.unwrap_uv",
     "gaa.match_density": "op.match_density",
+    "gaa.fix_uv_overlap": "op.fix_uv_overlap",
     "gaa.build_atlas": "op.build_atlas",
     "gaa.export_uv_kit": "op.export_uv_kit",
     "gaa.import_atlas": "op.import_atlas",

@@ -66,6 +66,11 @@ STRINGS = {
         "op.use_preset.desc": "Подставить готовый запрос в поле ввода чата",
         "op.pbr_folder.label": "PBR из папки",
         "op.pbr_folder.desc": "Собрать PBR-материал из текстурных карт в выбранной папке",
+        "op.apply_textures_folder.label": "Текстуры в материалы",
+        "op.apply_textures_folder.desc": (
+            "Найти карты в папке и подключить их к уже существующим материалам "
+            "выделенных объектов (или всей сцены, если ничего не выбрано)"
+        ),
         "op.material_doctor.label": "Доктор материалов",
         "op.material_doctor.desc": "Проверить материалы сцены и найти ошибки",
         "op.material_fix.label": "Починить",
@@ -93,6 +98,12 @@ STRINGS = {
             "Выровнять плотность текселей по островам: острова масштабируются и "
             "переупаковываются, раскладка меняется (Ctrl+Z отменяет). Если "
             "плотность уже одинаковая — ничего не трогаем"
+        ),
+        "op.fix_uv_overlap.label": "Исправить перекрытие UV",
+        "op.fix_uv_overlap.desc": (
+            "Раздвинуть только те острова, которые действительно делят "
+            "пиксели: каждый сдвигается на минимальное расстояние, остальная "
+            "раскладка сохраняется"
         ),
         "op.build_atlas.label": "Атлас",
         "op.build_atlas.desc": "Собрать общий атлас из островов выделенных объектов",
@@ -229,6 +240,24 @@ STRINGS = {
         "uv.unwrapped": "Развёрнуто объектов: {n}",
         "uv.density_target": "Целевая плотность: {n} px/м",
         "uv.density_done": "Плотность выровнена на {n} объектах",
+        "uv.overlap_none": (
+            "Перекрытий нет: острова не делят ни одного пикселя. Проверка "
+            "сравнивает сами полигоны, а не габаритные рамки."
+        ),
+        "uv.overlap_fixed": (
+            "Раздвинуто пар островов: {pairs} на {objects} объекте(ах). "
+            "Остальная раскладка не менялась."
+        ),
+        "uv.overlap_left": (
+            "Осталось перекрытий: {n}. Они внутри одного острова (общая "
+            "топология или зеркальные UV) — нужен шов."
+        ),
+        "uv.overlap_scaled": (
+            "Чтобы влезть в текстуру, вся раскладка ужата до {factor}; "
+            "плотность осталась равномерной."
+        ),
+        "uv.overlap_failed": "«{name}»: {error}",
+        "uv.overlap_done": "Перекрытий было {before}, осталось {after}",
         "uv.colorspace_unknown": "У «{name}» непонятно, какое пространство нужно",
         "uv.colorspace_ok": "У «{name}» уже правильное цветовое пространство",
         "uv.colorspace_set": "У «{name}» цветовое пространство: {before} → {after}",
@@ -272,6 +301,15 @@ STRINGS = {
         "textures.still_missing": "Осталось потерянных файлов: {n}",
         "textures.paths_ok": "С путями всё в порядке.",
         "textures.failed": "Не удалось разобраться с текстурами: {exc}",
+        "textures.applied": (
+            "Карт подключено: {maps}; материалов: {materials}, объектов: "
+            "{objects} (папка «{folder}»)."
+        ),
+        "textures.apply_no_maps": (
+            "В папке нет файлов с понятными именами карт (albedo/basecolor, "
+            "rough, metal, normal, ORM, height)."
+        ),
+        "textures.apply_failed": "Не удалось применить текстуры: {exc}",
         # -- baking (baking.py) --------------------------------------------
         "bake.title": "Запекание",
         "bake.no_object": "Нет активного объекта",
@@ -485,6 +523,12 @@ STRINGS = {
         "op.use_preset.desc": "Insert a ready-made request into the chat input",
         "op.pbr_folder.label": "PBR from folder",
         "op.pbr_folder.desc": "Build a PBR material from the texture maps in a chosen folder",
+        "op.apply_textures_folder.label": "Textures to materials",
+        "op.apply_textures_folder.desc": (
+            "Find the maps in a folder and wire them into the existing "
+            "materials of the selected objects (or the whole scene when "
+            "nothing is selected)"
+        ),
         "op.material_doctor.label": "Material doctor",
         "op.material_doctor.desc": "Check the materials of the scene and find mistakes",
         "op.material_fix.label": "Fix",
@@ -512,6 +556,11 @@ STRINGS = {
             "Bring every island to the same texel density: the islands are "
             "scaled and packed, so the layout changes (Ctrl+Z puts it back). "
             "Nothing is touched when the density is already even"
+        ),
+        "op.fix_uv_overlap.label": "Fix UV overlaps",
+        "op.fix_uv_overlap.desc": (
+            "Spread only the islands that really share pixels: each one moves "
+            "by the shortest distance and the rest of the layout stays put"
         ),
         "op.build_atlas.label": "Atlas",
         "op.build_atlas.desc": "Lay the islands of the selected objects into one shared atlas",
@@ -648,6 +697,24 @@ STRINGS = {
         "uv.unwrapped": "Unwrapped {n} object(s)",
         "uv.density_target": "Target density: {n} px/m",
         "uv.density_done": "Density matched on {n} object(s)",
+        "uv.overlap_none": (
+            "No overlaps: no two islands share a pixel. The check compares "
+            "the polygons themselves, not their bounding boxes."
+        ),
+        "uv.overlap_fixed": (
+            "Spread {pairs} island pair(s) on {objects} object(s). The rest "
+            "of the layout was not touched."
+        ),
+        "uv.overlap_left": (
+            "{n} overlap(s) left. They are inside one island (shared topology "
+            "or a symmetric layout) - add a seam to split them."
+        ),
+        "uv.overlap_scaled": (
+            "The whole layout was scaled to {factor} to fit the texture; the "
+            "density stayed even."
+        ),
+        "uv.overlap_failed": "\"{name}\": {error}",
+        "uv.overlap_done": "Overlaps: {before} before, {after} after",
         "uv.colorspace_unknown": "It is unclear which colour space \"{name}\" needs",
         "uv.colorspace_ok": "\"{name}\" already has the right colour space",
         "uv.colorspace_set": "\"{name}\": colour space {before} -> {after}",
@@ -691,6 +758,15 @@ STRINGS = {
         "textures.still_missing": "Still missing: {n}",
         "textures.paths_ok": "The paths are fine.",
         "textures.failed": "Could not deal with the textures: {exc}",
+        "textures.applied": (
+            "Maps wired: {maps}; materials: {materials}, objects: {objects} "
+            "(folder \"{folder}\")."
+        ),
+        "textures.apply_no_maps": (
+            "The folder has no files with recognisable map names "
+            "(albedo/basecolor, rough, metal, normal, ORM, height)."
+        ),
+        "textures.apply_failed": "Could not apply the textures: {exc}",
         # -- baking -------------------------------------------------------
         "bake.title": "Baking",
         "bake.no_object": "There is no active object",

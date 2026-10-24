@@ -30,6 +30,7 @@ Two Blender facts that cost real time to discover are baked into the code:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import time
@@ -42,7 +43,11 @@ from . import findings, materials, tools, uv
 
 # The bake types we offer, with the settings each one needs.
 BAKE_TYPES = {
-    "albedo": {"type": "COMBINED", "data": False},
+    # The base colour alone. COMBINED would bake the light and the reflections
+    # into it, and the albedo then looks washed out in the game. The base
+    # colour is routed into an Emission for the bake (see _BaseColourAsEmission):
+    # DIFFUSE/COLOR would be black for metals.
+    "albedo": {"type": "EMIT", "data": False, "via": "base_colour"},
     "diffuse": {"type": "DIFFUSE", "data": False},
     "normal": {"type": "NORMAL", "data": True},
     "roughness": {"type": "ROUGHNESS", "data": True},
@@ -204,6 +209,26 @@ def check_ready(obj) -> List:
     return out
 
 
+def _clear_object_bake_images(obj_name: str) -> None:
+    """Remove leftover bake images from a previous run of the same object."""
+    prefix = f"{obj_name}_"
+    for image in list(bpy.data.images):
+        if not image.name.startswith(prefix):
+            continue
+        # Only remove images that are not packed and not used by any material
+        try:
+            if getattr(image, "packed_file", None) is not None:
+                continue
+            if image.users:
+                continue
+        except Exception:
+            continue
+        try:
+            bpy.data.images.remove(image)
+        except Exception:
+            continue
+
+
 def _make_target(material, key: str, size: int, name: str) -> BakeTarget:
     """Create the image and the node that receives one bake.
 
@@ -213,13 +238,31 @@ def _make_target(material, key: str, size: int, name: str) -> BakeTarget:
     """
     spec = BAKE_TYPES[key]
     tree = material.node_tree
-    image = bpy.data.images.new(
-        f"{name}_{key}",
-        width=size,
-        height=size,
-        alpha=False,
-        float_buffer=spec["data"],
-    )
+    base = f"{name}_{key}"
+    # If an old unused image with this exact name exists, reuse or replace it.
+    image = bpy.data.images.get(base)
+    if image is not None:
+        try:
+            if image.users == 0 and getattr(image, "packed_file", None) is None:
+                bpy.data.images.remove(image)
+                image = None
+            elif image.users:
+                image = None
+        except Exception:
+            image = None
+    if image is None:
+        image = bpy.data.images.new(
+            base,
+            width=size,
+            height=size,
+            alpha=False,
+            float_buffer=spec["data"],
+        )
+    else:
+        try:
+            image.scale(size, size)
+        except Exception:
+            pass
     image.colorspace_settings.name = _color_space(spec["data"])
     node = tree.nodes.new("ShaderNodeTexImage")
     node.name = f"Bake_{key}"
@@ -247,6 +290,69 @@ def _activate_target(material, target: BakeTarget) -> None:
     for node in tree.nodes:
         node.select = node == target.node
     tree.nodes.active = target.node
+
+
+class _BaseColourAsEmission:
+    """Route the Principled base colour into the output for the duration of a bake.
+
+    An Emission bake writes exactly what reaches the output, with no light and
+    no metallic or specular term. Linking Base Color into an Emission therefore
+    bakes the colour itself. The links the material had are put back on exit,
+    so the material looks the same afterwards.
+    """
+
+    def __init__(self, material):
+        self.material = material
+        self.tree = material.node_tree
+        self.emit = None
+        self.surface = None
+        self.old_from = None
+
+    def __enter__(self):
+        tree = self.tree
+        output = next(
+            (n for n in tree.nodes if n.type == "OUTPUT_MATERIAL" and n.is_active_output),
+            None,
+        ) or next((n for n in tree.nodes if n.type == "OUTPUT_MATERIAL"), None)
+        bsdf = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if output is None or bsdf is None:
+            raise ValueError(
+                f"'{self.material.name}' has no Principled BSDF to take the base colour from"
+            )
+        base = bsdf.inputs["Base Color"]
+        self.surface = output.inputs["Surface"]
+        self.old_from = self.surface.links[0].from_socket if self.surface.links else None
+
+        self.emit = tree.nodes.new("ShaderNodeEmission")
+        self.emit.name = "Bake_base_colour"
+        self.emit.location = (output.location[0] - 200, output.location[1] - 200)
+        self.emit.inputs["Strength"].default_value = 1.0
+        if base.links:
+            tree.links.new(base.links[0].from_socket, self.emit.inputs["Color"])
+        else:
+            self.emit.inputs["Color"].default_value = tuple(base.default_value)
+
+        for link in list(self.surface.links):
+            tree.links.remove(link)
+        tree.links.new(self.emit.outputs["Emission"], self.surface)
+        return self
+
+    def __exit__(self, *exc_info):
+        tree = self.tree
+        for link in list(self.surface.links):
+            tree.links.remove(link)
+        if self.old_from is not None:
+            tree.links.new(self.old_from, self.surface)
+        if self.emit is not None:
+            tree.nodes.remove(self.emit)
+        return False
+
+
+def _bake_source(material, spec):
+    """The context a bake of *spec* needs around it (nothing for most maps)."""
+    if spec.get("via") == "base_colour":
+        return _BaseColourAsEmission(material)
+    return contextlib.nullcontext()
 
 
 def _save_image(image, path: str) -> bool:
@@ -357,6 +463,12 @@ def bake(
 
     created = []
     try:
+        # Drop stale bake images for this object so names don't collide
+        try:
+            _clear_object_bake_images(obj.name)
+        except Exception:
+            pass
+
         scene.render.engine = BAKE_ENGINE
         if hasattr(scene, "cycles"):
             scene.cycles.samples = samples
@@ -372,13 +484,14 @@ def bake(
         for key in wanted:
             target = _make_target(material, key, size, obj.name)
             created.append(target)
-            _activate_target(material, target)
-            result = bpy.ops.object.bake(
-                type=target.bake_type,
-                margin=margin,
-                margin_type="EXTEND",
-                use_clear=True,
-            )
+            with _bake_source(material, BAKE_TYPES[key]):
+                _activate_target(material, target)
+                result = bpy.ops.object.bake(
+                    type=target.bake_type,
+                    margin=margin,
+                    margin_type="EXTEND",
+                    use_clear=True,
+                )
             if "FINISHED" not in result:
                 report["error"] = f"the {key} bake was cancelled"
                 return report
@@ -480,8 +593,15 @@ def _base_name(name: str) -> str:
     marker may sit before it: "Wood_Procedural.001" is still the same wood.
     """
     text = re.sub(r"\.\d{3}$", "", str(name or "")).strip()
-    if text.lower().endswith("_procedural"):
-        text = text[: -len("_Procedural")]
+    # Markers may stack: a result of a bake of a result must not gain a
+    # second "_Bake" - that was the "Wood_Dark_Bake_Bake" folder.
+    changed = True
+    while changed:
+        changed = False
+        for marker in ("_procedural", "_bake"):
+            if text.lower().endswith(marker):
+                text = text[: -len(marker)]
+                changed = True
     return text.strip() or "Material"
 
 
@@ -742,9 +862,13 @@ def bake_atlas(
             # Every object needs a target in ITS OWN material, all pointing
             # at the same image.
             for obj in usable:
+                try:
+                    _clear_object_bake_images(obj.name)
+                except Exception:
+                    pass
                 material = obj.active_material
                 node = material.node_tree.nodes.new("ShaderNodeTexImage")
-                node.name = f"Bake_{key}"
+                node.name = f"Bake_{key}_{obj.name}"
                 node.label = key
                 node.image = image
                 node.location = (700, 300 - 200 * len(material.node_tree.nodes))
@@ -753,12 +877,17 @@ def bake_atlas(
                 material.node_tree.nodes.active = node
                 created_nodes.append((material, node))
 
-            result = bpy.ops.object.bake(
-                type=spec["type"],
-                margin=margin,
-                margin_type="EXTEND",
-                use_clear=True,
-            )
+            # One bake covers every object, so every material needs its
+            # source routed at the same time.
+            with contextlib.ExitStack() as stack:
+                for material in {obj.active_material for obj in usable}:
+                    stack.enter_context(_bake_source(material, spec))
+                result = bpy.ops.object.bake(
+                    type=spec["type"],
+                    margin=margin,
+                    margin_type="EXTEND",
+                    use_clear=True,
+                )
             if "FINISHED" not in result:
                 report["error"] = f"the {key} bake was cancelled"
                 return report

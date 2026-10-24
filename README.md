@@ -69,7 +69,7 @@ Or build it yourself from the sources (only the standard library is needed):
 ```bash
 git clone <repo-url>
 cd BlenderAgent
-python tools/build_addon.py          # -> dist/asset_assistant-0.5.9.zip
+python tools/build_addon.py          # -> dist/asset_assistant-0.6.2.zip
 ```
 
 Every release is built from the tagged commit, so the zip on the releases page
@@ -340,7 +340,7 @@ git tag v0.5.10 && git push origin main v0.5.10
 ```
 
 Then *Releases → Draft a new release*, pick the tag `v0.5.10`, attach
-`dist/asset_assistant-0.5.10.zip`, paste the notes (`RELEASE_NOTES.md`) and
+`dist/asset_assistant-0.6.2.zip`, paste the notes (`RELEASE_NOTES.md`) and
 publish. The script checks that the version agrees in all three places it is
 written, so a forgotten bump cannot ship a mislabelled add-on.
 

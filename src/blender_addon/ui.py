@@ -273,7 +273,10 @@ def draw_chat(
     row.operator("gaa.unwrap_uv", icon="GROUP_UVS")
     row.operator("gaa.match_density", icon="FULLSCREEN_ENTER")
     row.operator("gaa.check_uv", icon="CHECKMARK")
+    # The overlap repair gets its own row: it is the answer to the check
+    # above and it must be findable without hovering every small button.
     row = box.row(align=True)
+    row.operator("gaa.fix_uv_overlap", icon="ARROW_LEFTRIGHT")
     row.operator("gaa.build_atlas", icon="TEXTURE")
     row = box.row(align=True)
     row.operator("gaa.export_uv_kit", icon="EXPORT")

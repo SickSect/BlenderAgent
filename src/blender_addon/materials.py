@@ -266,16 +266,18 @@ def assign_material(obj, material) -> str:
 
 
 def apply_textures_from_folder(folder: str, objects=None) -> dict:
-    """Apply texture maps from *folder* to materials of *objects*.
+    """Apply the texture maps of *folder* to the materials of *objects*.
 
-    For each material of the given objects (or all objects with materials),
-    finds matching textures in *folder* by name and connects them to
-    corresponding Principled BSDF sockets. Returns a dict with ``ok``,
-    ``assigned`` count and ``folder``.
+    The folder is read once; every material gets the same set of maps. That is
+    what "one asset, one texture set" looks like, and it is also the safe
+    default: a folder is a texture set, not a per-material library.
+
+    Returns a dict with ``ok``, ``assigned`` (materials changed), ``objects``
+    (objects touched), ``maps`` (roles found) and ``folder``.
     """
-    maps = find_map_candidates(folder)
+    maps = find_maps(folder)
     if not maps:
-        return {"ok": False, "error": "no maps found", "assigned": 0}
+        return {"ok": False, "error": "no maps found", "assigned": 0, "objects": 0}
 
     if objects is None:
         objects = [
@@ -286,25 +288,43 @@ def apply_textures_from_folder(folder: str, objects=None) -> dict:
     else:
         objects = [o for o in objects if o.type == "MESH" and o.data.materials]
 
-    assigned_count = 0
+    assigned = 0
+    touched = 0
+    seen = set()
     for obj in objects:
-        for slot in obj.data.materials:
-            mat = slot.material
+        changed = False
+        for mat in obj.data.materials:
             if mat is None:
                 continue
+            # Linked duplicates share the material: wire it once, count it
+            # once, and do not create a second set of texture nodes.
+            key = mat.as_pointer() if hasattr(mat, "as_pointer") else id(mat)
+            if key in seen:
+                continue
+            seen.add(key)
             if _apply_maps_to_material(mat, maps):
-                assigned_count += 1
+                assigned += 1
+                changed = True
+        if changed:
+            touched += 1
 
-    return {"ok": True, "assigned": assigned_count, "folder": folder}
+    return {
+        "ok": True,
+        "assigned": assigned,
+        "objects": touched,
+        "maps": sorted(maps),
+        "folder": folder,
+    }
 
 
 def _apply_maps_to_material(mat, maps) -> bool:
     """Apply texture maps from *maps* to *mat*.
 
-    Finds or creates ShaderNodeTexImage nodes for each role and connects them
-    to the matching Principled BSDF inputs (Base Color, Roughness, Metallic,
-    Normal Map → Normal, ORM → Roughness/Metallic via Separate Color,
-    Emission Color, Height → Bump → Displacement/Normal).
+    Finds or creates the texture and helper nodes and connects them to the
+    matching Principled BSDF inputs (Base Color, Roughness, Metallic, Normal
+    Map -> Normal, ORM -> Roughness/Metallic via Separate Color, Emission,
+    Height -> Bump -> Normal). Running it twice re-uses its own nodes instead
+    of stacking a second copy of the shader on top.
     """
     tree = mat.node_tree
     if tree is None:
@@ -318,24 +338,24 @@ def _apply_maps_to_material(mat, maps) -> bool:
         bsdf.name = "Principled BSDF"
 
     changed = False
+    has_normal = "normal" in maps
 
     for role, path in maps.items():
-        # Find an existing unused image texture node or create a new one.
-        tex_node = None
-        for node in tree.nodes:
-            if node.type == "ShaderNodeTexImage" and node.image is None:
-                tex_node = node
-                break
+        # A folder can carry both a normal map and a height map. The normal
+        # map is the finished result; the height would only fight it for the
+        # same socket, so it loses.
+        if role == "height" and has_normal:
+            continue
 
+        tex_node = nodes.get(f"{role}_texture")
         if tex_node is None:
             tex_node = nodes.new("ShaderNodeTexImage")
             tex_node.name = f"{role}_texture"
             tex_node.label = f"{role} texture"
 
-        # Load image (reuse already loaded image datablock if possible).
         image = bpy.data.images.get(path)
         if image is None:
-            image = bpy.data.images.load(path)
+            image = bpy.data.images.load(path, check_existing=True)
         tex_node.image = image
 
         # Set colour space: data maps must be Non-Color.
@@ -344,7 +364,6 @@ def _apply_maps_to_material(mat, maps) -> bool:
         else:
             image.colorspace_settings.name = "sRGB"
 
-        # Link to the appropriate BSDF input.
         if role == "base":
             _link(links, tex_node, "Color", bsdf, "Base Color")
         elif role == "rough":
@@ -352,23 +371,29 @@ def _apply_maps_to_material(mat, maps) -> bool:
         elif role == "metal":
             _link(links, tex_node, "Color", bsdf, "Metallic")
         elif role == "normal":
-            normal_map = nodes.new("ShaderNodeNormalMap")
-            normal_map.name = "Normal Map"
+            normal_map = nodes.get("Normal Map")
+            if normal_map is None:
+                normal_map = nodes.new("ShaderNodeNormalMap")
+                normal_map.name = "Normal Map"
             _link(links, tex_node, "Color", normal_map, "Color")
             _link(links, normal_map, "Normal", bsdf, "Normal")
         elif role == "orm":
-            sep = nodes.new("ShaderNodeSeparateColor")
-            sep.name = "Separate Color"
+            sep = nodes.get("ORM Separate")
+            if sep is None:
+                sep = nodes.new("ShaderNodeSeparateColor")
+                sep.name = "ORM Separate"
             _link(links, tex_node, "Color", sep, "Color")
             _link(links, sep, "Green", bsdf, "Roughness")
             _link(links, sep, "Blue", bsdf, "Metallic")
         elif role == "emit":
-            _link(links, tex_node, "Color", bsdf, "Emission Color")
+            _link(links, tex_node, "Color", bsdf, "Emission Color", "Emission")
         elif role == "height":
-            bump = nodes.new("ShaderNodeBump")
-            bump.name = "Height to Normal"
+            bump = nodes.get("Height to Normal")
+            if bump is None:
+                bump = nodes.new("ShaderNodeBump")
+                bump.name = "Height to Normal"
             _link(links, tex_node, "Color", bump, "Height")
-            _link(links, bump, "Height", bsdf, "Displacement")
+            _link(links, bump, "Normal", bsdf, "Normal")
 
         changed = True
 

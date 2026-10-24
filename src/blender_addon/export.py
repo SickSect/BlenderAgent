@@ -26,7 +26,7 @@ from typing import List, Optional
 
 import bpy
 
-from . import api, doctor, materials, textures, tools
+from . import api, doctor, materials, textures, tools, uvmapping
 
 # What the exporters cannot express. The glTF and FBX exporters take a
 # Principled BSDF and map it onto their own model; anything else is either
@@ -257,12 +257,18 @@ def export(
     objects=None,
     apply_modifiers: bool = True,
     strict: bool = True,
+    prepare_materials: bool = True,
 ) -> Dict:
     """Write the selected objects to *folder* in the *fmt* format.
 
     ``strict`` refuses the export when the readiness check found errors: the
     assistant should fix the project first. A person who presses the button
     gets the export anyway - with the findings in the report.
+
+    ``prepare_materials`` moves constant Mapping / Texture Coordinate chains
+    into UV layers for the duration of the export. Blender evaluates those
+    nodes; FBX and most glTF importers do not, so without the step the texture
+    arrives with different tiling. The scene is restored afterwards.
     """
     result: Dict = {
         "ok": False,
@@ -270,6 +276,7 @@ def export(
         "objects": [],
         "findings": [],
         "size": 0,
+        "prepared": [],
     }
     fmt = (fmt or "glb").strip().lower()
     if fmt not in FORMATS:
@@ -306,6 +313,17 @@ def export(
         )
         return result
 
+    # If the user somehow passed a file path (e.g. the .blend), export next to it.
+    try:
+        if folder and os.path.isfile(folder):
+            folder = os.path.dirname(folder)
+    except Exception:
+        pass
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        pass
+
     name = _export_name(chosen)
     suffix = {"glb": ".glb", "gltf": ".gltf", "fbx": ".fbx"}[fmt]
     path = os.path.join(folder, name + suffix)
@@ -316,6 +334,15 @@ def export(
     for obj in chosen:
         obj.select_set(True)
     bpy.context.view_layer.objects.active = chosen[0]
+
+    conversion = None
+    if prepare_materials:
+        try:
+            conversion = uvmapping.convert(chosen, prefix="EXPORT")
+            result["prepared"] = list(conversion.report.converted)
+            result["prepare_skipped"] = list(conversion.report.skipped)
+        except Exception as exc:  # noqa: BLE001 - preparation is best effort
+            result["prepare_error"] = f"{type(exc).__name__}: {exc}"
 
     try:
         if fmt in ("glb", "gltf"):
@@ -348,6 +375,10 @@ def export(
     except Exception as exc:  # noqa: BLE001 - a failed export must not kill Blender
         result["error"] = f"{type(exc).__name__}: {exc}"
         return result
+    finally:
+        # The .blend must look exactly as it did before the button was pressed.
+        if conversion is not None:
+            conversion.restore()
 
     result["ok"] = True
     result["path"] = path
@@ -371,6 +402,19 @@ def _report(result: Dict) -> str:
         lines.append("With warnings:")
         for finding in warnings[:5]:
             lines.append(f"- {finding['text']}")
+    prepared = result.get("prepared") or []
+    if prepared:
+        lines.append(
+            "Moved texture mapping into UVs for the export: "
+            + ", ".join(prepared)
+        )
+    skipped = result.get("prepare_skipped") or []
+    if skipped:
+        lines.append("Texture mapping that still needs a bake:")
+        for item in skipped[:5]:
+            lines.append(f"- {item}")
+    if result.get("prepare_error"):
+        lines.append(f"Material preparation failed: {result['prepare_error']}")
     return "\n".join(lines)
 
 

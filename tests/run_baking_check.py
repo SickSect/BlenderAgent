@@ -382,6 +382,13 @@ def part_names(baking, procedural):
         Path(baking.bake_folder_for(copy)).name == "Wood_Bake",
         "a copy of the material bakes into the same folder",
     )
+    # Baking the result again must reuse the folder, not add "_Bake_Bake".
+    baked_again = bpy.data.materials.new("Wood_Bake")
+    check(
+        Path(baking.bake_folder_for(baked_again)).name == "Wood_Bake",
+        "a baked material bakes into its own folder, not Wood_Bake_Bake",
+    )
+    bpy.data.materials.remove(baked_again)
 
 
 def part_bake_twice(baking):
@@ -668,6 +675,60 @@ def part_tools(baking):
     check(result.ok, "the atlas tool runs")
 
 
+def part_albedo_colour_only(baking):
+    print("\n== the albedo is the base colour, not the lit picture")
+    base = (0.8, 0.2, 0.1)
+    obj, _mat = make_object(name="AlbedoCube", color=(*base, 1.0))
+    report = baking.bake(obj, targets=("albedo",), size=64, samples=8)
+    check(report.get("ok") is True, f"the albedo bake finished ({report.get('error')})")
+    image = bpy.data.images.get("AlbedoCube_albedo")
+    if image is None:
+        check(False, "the albedo image exists")
+        return
+    import numpy as np
+
+    buffer = np.empty(image.size[0] * image.size[1] * 4, dtype=np.float32)
+    image.pixels.foreach_get(buffer)
+    pixels = buffer.reshape(-1, 4)[:, :3]
+    # Texels outside the islands stay empty; only the painted ones count.
+    painted = pixels[pixels.max(axis=1) > 0.002]
+    rgb = painted.mean(axis=0)
+    # The colour a viewer should see: the base colour, encoded for sRGB.
+    encoded = [
+        12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055 for c in base
+    ]
+    worst = max(abs(a - b) for a, b in zip(rgb, encoded))
+    check(
+        worst < 0.04,
+        f"the albedo matches the base colour (mean {np.round(rgb, 3)}, expected {np.round(encoded, 3)})",
+    )
+    surface = _mat.node_tree.nodes.get("Material Output")
+    check(
+        surface is not None and bool(surface.inputs["Surface"].links)
+        and surface.inputs["Surface"].links[0].from_node.type == "BSDF_PRINCIPLED",
+        "the output is wired to the BSDF again after the bake",
+    )
+    bpy.data.objects.remove(obj, do_unlink=True)
+
+    # A metal has no diffuse term: a plain DIFFUSE/COLOR bake would be black.
+    metal, metal_mat = make_object(name="MetalCube", color=(*base, 1.0))
+    bsdf = next(n for n in metal_mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    bsdf.inputs["Metallic"].default_value = 1.0
+    report = baking.bake(metal, targets=("albedo",), size=64, samples=8)
+    image = bpy.data.images.get("MetalCube_albedo")
+    buffer = np.empty(image.size[0] * image.size[1] * 4, dtype=np.float32)
+    image.pixels.foreach_get(buffer)
+    pixels = buffer.reshape(-1, 4)[:, :3]
+    painted = pixels[pixels.max(axis=1) > 0.002]
+    metal_rgb = painted.mean(axis=0) if len(painted) else np.zeros(3)
+    worst = max(abs(a - b) for a, b in zip(metal_rgb, encoded))
+    check(
+        report.get("ok") is True and worst < 0.04,
+        f"a metal's albedo is the base colour too (mean {np.round(metal_rgb, 3)})",
+    )
+    bpy.data.objects.remove(metal, do_unlink=True)
+
+
 # -- runner -----------------------------------------------------------------
 
 
@@ -698,6 +759,7 @@ def main():
         part_inspect(baking)
         part_standard_bake(baking)
         part_tools(baking)
+        part_albedo_colour_only(baking)
     finally:
         package.unregister()
 

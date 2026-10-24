@@ -242,6 +242,151 @@ def part_overlap(uv):
     )
 
 
+def part_overlap_precise(uv):
+    print("\n== the overlap test follows the polygons")
+    mesh = bpy.data.meshes.new("PreciseOverlap")
+    # Two separate triangles. Their boxes cross, their polygons do not:
+    # the first lives below u+v=0.9, the second above u+v=1.1.
+    mesh.from_pydata(
+        [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (2.0, 1.0, 0.0),
+            (1.0, 2.0, 0.0),
+        ],
+        [],
+        [(0, 1, 2), (3, 4, 5)],
+    )
+    mesh.update()
+    obj = bpy.data.objects.new("PreciseOverlap", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    layer = mesh.uv_layers.new(name="UVMap")
+    coords = [
+        (0.0, 0.0),
+        (0.9, 0.0),
+        (0.0, 0.9),
+        (1.0, 1.0),
+        (0.1, 1.0),
+        (1.0, 0.1),
+    ]
+    for loop in mesh.loops:
+        layer.data[loop.index].uv = coords[loop.vertex_index]
+
+    report = uv.analyze(obj)
+    check(len(report.islands) == 2, f"two islands ({len(report.islands)})")
+    if len(report.islands) == 2:
+        first, second = report.islands
+        check(
+            first.uv_min[0] < second.uv_max[0]
+            and second.uv_min[0] < first.uv_max[0]
+            and first.uv_min[1] < second.uv_max[1]
+            and second.uv_min[1] < first.uv_max[1],
+            "the bounding boxes really cross",
+        )
+    check(
+        not report.overlap_pairs,
+        f"crossing boxes are not an overlap ({len(report.overlap_pairs)} pair(s))",
+    )
+
+
+def part_overlap_repair(uv):
+    print("\n== spreading overlapping islands")
+    mesh = bpy.data.meshes.new("OverlapRepair")
+    # Two disconnected quads, so they are two islands even without seams.
+    mesh.from_pydata(
+        [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (2.0, 0.0, 0.0),
+            (3.0, 0.0, 0.0),
+            (3.0, 1.0, 0.0),
+            (2.0, 1.0, 0.0),
+        ],
+        [],
+        [(0, 1, 2, 3), (4, 5, 6, 7)],
+    )
+    mesh.update()
+    obj = bpy.data.objects.new("OverlapRepair", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    layer = mesh.uv_layers.new(name="UVMap")
+    square = [(0.2, 0.2), (0.4, 0.2), (0.4, 0.4), (0.2, 0.4)]
+    for loop in mesh.loops:
+        layer.data[loop.index].uv = square[loop.vertex_index % 4]
+
+    before = uv.analyze(obj)
+    check(
+        len(before.overlap_pairs) == 1,
+        f"the identical squares overlap ({len(before.overlap_pairs)} pair(s))",
+    )
+    sizes_before = sorted(
+        (round(i.size_uv[0], 6), round(i.size_uv[1], 6)) for i in before.islands
+    )
+
+    result = uv.repair_overlaps(obj, 0.01)
+    check(result.get("ok") is True, f"the repair runs ({result.get('error')})")
+    check(result.get("changed") is True, "the report says the UVs were changed")
+    check(result.get("pairs_before") == 1, "one pair was found before")
+    check(result.get("pairs_after") == 0, "no pair is left after")
+
+    after = uv.analyze(obj)
+    check(not after.overlap_pairs, "the analyser agrees: no overlap left")
+    check(after.outside == 0, f"nothing left the texture ({after.outside})")
+    sizes_after = sorted(
+        (round(i.size_uv[0], 6), round(i.size_uv[1], 6)) for i in after.islands
+    )
+    check(sizes_after == sizes_before, "the islands were moved, not resized")
+
+    # A second press has nothing to do and must not touch a single bit.
+    uv_before = [tuple(item.uv) for item in layer.data]
+    again = uv.repair_overlaps(obj, 0.01)
+    uv_after = [tuple(item.uv) for item in layer.data]
+    check(again.get("changed") is False, "the second run reports no change")
+    check(uv_before == uv_after, "the second run does not move the islands")
+
+
+def part_overlap_operator(uv):
+    print("\n== the button behind 'Fix UV overlaps'")
+    mesh = bpy.data.meshes.new("OverlapButton")
+    mesh.from_pydata(
+        [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (2.0, 0.0, 0.0),
+            (3.0, 0.0, 0.0),
+            (3.0, 1.0, 0.0),
+            (2.0, 1.0, 0.0),
+        ],
+        [],
+        [(0, 1, 2, 3), (4, 5, 6, 7)],
+    )
+    mesh.update()
+    obj = bpy.data.objects.new("OverlapButton", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    layer = mesh.uv_layers.new(name="UVMap")
+    square = [(0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3)]
+    for loop in mesh.loops:
+        layer.data[loop.index].uv = square[loop.vertex_index % 4]
+
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.context.view_layer.update()
+
+    result = bpy.ops.gaa.fix_uv_overlap()
+    check(result == {"FINISHED"}, f"the operator finishes ({result})")
+    check(bpy.context.mode == "OBJECT", "it leaves Object Mode")
+    check(
+        not uv.analyze(obj).overlap_pairs,
+        "the operator really removed the overlap",
+    )
+
+
 def part_audit(uv, image):
     print("\n== the audit and the tool")
     found = uv.audit()
@@ -789,6 +934,9 @@ def main():
         part_scaled_object(uv, image)
         part_outside(uv)
         part_overlap(uv)
+        part_overlap_precise(uv)
+        part_overlap_repair(uv)
+        part_overlap_operator(uv)
         part_report(uv, image)
         part_seams(uv)
         part_settings(uv)

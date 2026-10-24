@@ -89,6 +89,13 @@ class Island:
     texel_size: Optional[float] = None    # metres per pixel
     distortion: float = 1.0
     overlaps: List[int] = field(default_factory=list)
+    # The island's triangles in UV space. They are needed by the precise
+    # overlap test below: the bounding boxes alone give false alarms on
+    # diagonal islands. Not a part of the public report, so ``repr`` and
+    # ``compare`` are off.
+    triangles: List[Tuple[Tuple[float, float], ...]] = field(
+        default_factory=list, repr=False, compare=False
+    )
 
     @property
     def size_uv(self) -> Tuple[float, float]:
@@ -131,10 +138,21 @@ class UVReport:
 
     @property
     def overlap_pairs(self) -> List[Tuple[int, int]]:
+        """Every overlapping pair once, in island order.
+
+        Both islands of a pair used to list each other, so the old count was
+        twice the number of real pairs. The current test is symmetric and the
+        report should say "1 pair", not "2 pairs".
+        """
+        seen = set()
         pairs = []
         for index, island in enumerate(self.islands):
             for other in island.overlaps:
-                pairs.append((index, other))
+                key = (index, other) if index < other else (other, index)
+                if key in seen:
+                    continue
+                seen.add(key)
+                pairs.append(key)
         return pairs
 
 
@@ -293,9 +311,16 @@ def analyze(obj, texture_size: Optional[Tuple[int, int]] = None) -> UVReport:
                 # scale it by the determinant of the matrix.
                 area_uv = 0.0
                 for i in range(1, len(uv_points) - 1):
-                    area_uv += _triangle_area_2d(
-                        uv_points[0], uv_points[i], uv_points[i + 1]
+                    triangle = (
+                        uv_points[0],
+                        uv_points[i],
+                        uv_points[i + 1],
                     )
+                    area_uv += _triangle_area_2d(*triangle)
+                    # The same fan that measures the area also feeds the
+                    # precise overlap test; a polygon is split into
+                    # triangles the same way in both places.
+                    island.triangles.append(triangle)
                 area_world = 0.0
                 for i in range(1, len(world_points) - 1):
                     area_world += _triangle_area_3d(
@@ -327,23 +352,156 @@ def analyze(obj, texture_size: Optional[Tuple[int, int]] = None) -> UVReport:
     return report
 
 
-def _find_overlaps(report: UVReport) -> None:
-    """Mark the islands whose UV boxes intersect.
+def _triangle_boxes(triangles) -> List[Tuple[float, float, float, float]]:
+    """The 2D bounding box of every triangle: (u0, v0, u1, v1)."""
+    boxes = []
+    for a, b, c in triangles:
+        boxes.append(
+            (
+                min(a[0], b[0], c[0]),
+                min(a[1], b[1], c[1]),
+                max(a[0], b[0], c[0]),
+                max(a[1], b[1], c[1]),
+            )
+        )
+    return boxes
 
-    A box test is conservative: it can report an overlap that is not real
-    (two diagonal islands whose boxes cross but whose polygons do not), and it
-    never misses a real one. That is the right way round - a false alarm is
-    annoying, a missed overlap is a bug in the render.
+
+def _boxes_cross(first, second) -> bool:
+    """Whether two (u0, v0, u1, v1) boxes share area."""
+    return (
+        first[0] < second[2]
+        and second[0] < first[2]
+        and first[1] < second[3]
+        and second[1] < first[3]
+    )
+
+
+def _project_triangle(triangle, axis) -> Tuple[float, float]:
+    values = [
+        point[0] * axis[0] + point[1] * axis[1] for point in triangle
+    ]
+    return min(values), max(values)
+
+
+def _triangles_cross(first, second) -> bool:
+    """Whether two triangles share area in the UV plane.
+
+    The separating axis test: if any edge normal of either triangle separates
+    their projections, there is no overlap. Touching edges count as *not*
+    overlapping - two islands that share a border do not fight for the same
+    pixels.
+    """
+    for triangle in (first, second):
+        for index in range(3):
+            x0, y0 = triangle[index]
+            x1, y1 = triangle[(index + 1) % 3]
+            axis = (-(y1 - y0), x1 - x0)
+            if axis[0] == 0.0 and axis[1] == 0.0:
+                continue
+            first_min, first_max = _project_triangle(first, axis)
+            second_min, second_max = _project_triangle(second, axis)
+            if first_max <= second_min or second_max <= first_min:
+                return False
+    return True
+
+
+# How many triangle pairs a single island pair may test before the check
+# gives up and keeps the conservative bounding-box answer. A pathological
+# mesh must not freeze the UI.
+_TRIANGLE_TEST_BUDGET = 200_000
+
+
+def _triangles_collide(
+    first, first_boxes, second, second_boxes
+) -> bool:
+    """Whether two triangle soups share area.
+
+    The bounding boxes are the broad phase, a uniform grid over the bigger
+    island is the narrow one: only triangles that land in the same cell are
+    tested. That keeps the check fast on meshes where two large diagonal
+    islands have crossing boxes but no real overlap - the exact case the old
+    bounding-box-only test used to report.
+    """
+    if not first or not second:
+        return False
+    if len(first) > len(second):
+        first, second = second, first
+        first_boxes, second_boxes = second_boxes, first_boxes
+
+    second_min_u = min(box[0] for box in second_boxes)
+    second_min_v = min(box[1] for box in second_boxes)
+    second_max_u = max(box[2] for box in second_boxes)
+    second_max_v = max(box[3] for box in second_boxes)
+    width = max(second_max_u - second_min_u, 1e-9)
+    height = max(second_max_v - second_min_v, 1e-9)
+
+    cells = max(1, min(32, int(math.sqrt(len(second)))))
+    cell_w = width / cells
+    cell_h = height / cells
+
+    grid = {}
+    for index, box in enumerate(second_boxes):
+        i0 = max(0, min(cells - 1, int((box[0] - second_min_u) / cell_w)))
+        i1 = max(0, min(cells - 1, int((box[2] - second_min_u) / cell_w)))
+        j0 = max(0, min(cells - 1, int((box[1] - second_min_v) / cell_h)))
+        j1 = max(0, min(cells - 1, int((box[3] - second_min_v) / cell_h)))
+        for i in range(i0, i1 + 1):
+            for j in range(j0, j1 + 1):
+                grid.setdefault((i, j), []).append(index)
+
+    tests = 0
+    for index, box in enumerate(first_boxes):
+        if (
+            box[2] <= second_min_u
+            or box[0] >= second_max_u
+            or box[3] <= second_min_v
+            or box[1] >= second_max_v
+        ):
+            continue
+        i0 = max(0, min(cells - 1, int((box[0] - second_min_u) / cell_w)))
+        i1 = max(0, min(cells - 1, int((box[2] - second_min_u) / cell_w)))
+        j0 = max(0, min(cells - 1, int((box[1] - second_min_v) / cell_h)))
+        j1 = max(0, min(cells - 1, int((box[3] - second_min_v) / cell_h)))
+        candidates = set()
+        for i in range(i0, i1 + 1):
+            for j in range(j0, j1 + 1):
+                candidates.update(grid.get((i, j), ()))
+        for other in candidates:
+            if not _boxes_cross(box, second_boxes[other]):
+                continue
+            tests += 1
+            if tests > _TRIANGLE_TEST_BUDGET:
+                # Too much work: keep the old, conservative answer rather
+                # than claim a clean result we did not verify.
+                return True
+            if _triangles_cross(first[index], second[other]):
+                return True
+    return False
+
+
+def _find_overlaps(report: UVReport) -> None:
+    """Mark the islands that really share pixels.
+
+    The bounding-box test is the broad phase: it never misses a real overlap
+    and is cheap. The triangle test is the narrow phase: it throws away the
+    false alarms of the boxes (two diagonal islands whose boxes cross but
+    whose polygons do not).
     """
     islands = report.islands
+    boxes = [_triangle_boxes(island.triangles) for island in islands]
     for i, first in enumerate(islands):
         for j in range(i + 1, len(islands)):
             second = islands[j]
-            if (
+            if not (
                 first.uv_min[0] < second.uv_max[0]
                 and second.uv_min[0] < first.uv_max[0]
                 and first.uv_min[1] < second.uv_max[1]
                 and second.uv_min[1] < first.uv_max[1]
+            ):
+                continue
+            if _triangles_collide(
+                first.triangles, boxes[i], second.triangles, boxes[j]
             ):
                 first.overlaps.append(j)
                 second.overlaps.append(i)
@@ -995,6 +1153,16 @@ def unwrap_object(obj, settings: UVSettings, context=None) -> Dict:
             view_layer.objects.active = was_active
         except Exception:
             pass
+
+    # The pack leaves a gap, but a failed solve (Blender warns "failed to
+    # solve N of M islands") can still leave two islands in the same place.
+    # Nudge them apart now instead of leaving the surprise to the UV check.
+    if report.get("ok"):
+        repaired = repair_overlaps(obj, settings.margin)
+        report["overlap_pairs"] = repaired.get("pairs_before", 0)
+        report["spread"] = repaired.get("moved", 0)
+        report["overlap_pairs_left"] = repaired.get("pairs_after", 0)
+        report["overlap_scale"] = repaired.get("scale", 1.0)
     return report
 
 
@@ -1017,6 +1185,286 @@ def scope_objects(context=None) -> List:
         return [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
     except Exception:
         return []
+
+
+# --- repairing the overlaps -------------------------------------------------
+#
+# ``uv.pack_islands`` is the wrong tool for "my islands sit on top of each
+# other": it lays the whole object out again and, with ``scale=True``, blows
+# the islands up to fill the texture. The user asked for a nudge, not for a new
+# layout.
+#
+# The repair below moves only the islands that really overlap, by the shortest
+# distance that puts their boxes apart, and scales the whole layout down only
+# if it no longer fits the [0,1] square. The texel density stays even: all
+# islands keep their size relative to each other.
+#
+# What it cannot fix: two overlapping parts of *one* island. The packer sees
+# them as one piece, and so does this code. Such a model needs a seam (or the
+# symmetric layout has to be made on purpose) - the report says so.
+
+
+@dataclass
+class _UVIsland:
+    """An island during the repair: its loops, its triangles, its box."""
+
+    uv_layer: object
+    loops: List
+    triangles: List[Tuple[Tuple[float, float], ...]]
+    uv_min: Tuple[float, float]
+    uv_max: Tuple[float, float]
+    area: float
+
+    @property
+    def box(self) -> Tuple[float, float, float, float]:
+        return (self.uv_min[0], self.uv_min[1], self.uv_max[0], self.uv_max[1])
+
+    def move(self, du: float, dv: float) -> None:
+        if du == 0.0 and dv == 0.0:
+            return
+        for loop in self.loops:
+            uv = loop[self.uv_layer].uv
+            loop[self.uv_layer].uv = (uv.x + du, uv.y + dv)
+        self.uv_min = (self.uv_min[0] + du, self.uv_min[1] + dv)
+        self.uv_max = (self.uv_max[0] + du, self.uv_max[1] + dv)
+
+    def scale(self, factor: float, centre: Tuple[float, float]) -> None:
+        if abs(factor - 1.0) < 1e-9:
+            return
+        for loop in self.loops:
+            uv = loop[self.uv_layer].uv
+            loop[self.uv_layer].uv = (
+                centre[0] + (uv.x - centre[0]) * factor,
+                centre[1] + (uv.y - centre[1]) * factor,
+            )
+        self.uv_min = (
+            centre[0] + (self.uv_min[0] - centre[0]) * factor,
+            centre[1] + (self.uv_min[1] - centre[1]) * factor,
+        )
+        self.uv_max = (
+            centre[0] + (self.uv_max[0] - centre[0]) * factor,
+            centre[1] + (self.uv_max[1] - centre[1]) * factor,
+        )
+
+
+def _collect_repair_islands(bm, uv_layer) -> List[_UVIsland]:
+    """The islands with everything the repair needs, in one bmesh pass."""
+    out = []
+    for group in _islands(bm, uv_layer, None):
+        loops = [loop for face in group for loop in face.loops]
+        if not loops:
+            continue
+        u_min = v_min = 1e30
+        u_max = v_max = -1e30
+        triangles = []
+        area = 0.0
+        for face in group:
+            points = []
+            for loop in face.loops:
+                uv = loop[uv_layer].uv
+                points.append((uv.x, uv.y))
+                u_min = min(u_min, uv.x)
+                u_max = max(u_max, uv.x)
+                v_min = min(v_min, uv.y)
+                v_max = max(v_max, uv.y)
+            for i in range(1, len(points) - 1):
+                triangle = (points[0], points[i], points[i + 1])
+                triangles.append(triangle)
+                area += _triangle_area_2d(*triangle)
+        out.append(
+            _UVIsland(
+                uv_layer=uv_layer,
+                loops=loops,
+                triangles=triangles,
+                uv_min=(u_min, v_min),
+                uv_max=(u_max, v_max),
+                area=area,
+            )
+        )
+    return out
+
+
+def _island_boxes_cross(first: _UVIsland, second: _UVIsland) -> bool:
+    return _boxes_cross(first.box, second.box)
+
+
+def _overlap_pairs(islands: Sequence[_UVIsland]) -> List[Tuple[int, int]]:
+    """The island pairs that really share pixels, by list position."""
+    boxes = [_triangle_boxes(island.triangles) for island in islands]
+    pairs = []
+    for i, first in enumerate(islands):
+        for j in range(i + 1, len(islands)):
+            second = islands[j]
+            if not _island_boxes_cross(first, second):
+                continue
+            if _triangles_collide(
+                first.triangles, boxes[i], second.triangles, boxes[j]
+            ):
+                pairs.append((i, j))
+    return pairs
+
+
+def _escape_vector(
+    other: _UVIsland, mover: _UVIsland, gap: float
+) -> Tuple[float, float]:
+    """The shortest move that takes *mover* out of *other*'s box.
+
+    Four candidates: right, left, up, down. When a direction keeps the island
+    inside the texture and another does not, the inside one wins even if it is
+    a little longer - moving the whole layout out of [0,1] and scaling it back
+    costs density.
+    """
+    candidates = []
+    du = (other.uv_max[0] + gap) - mover.uv_min[0]
+    candidates.append((abs(du), du, 0.0))
+    du = (other.uv_min[0] - gap) - mover.uv_max[0]
+    candidates.append((abs(du), du, 0.0))
+    dv = (other.uv_max[1] + gap) - mover.uv_min[1]
+    candidates.append((abs(dv), 0.0, dv))
+    dv = (other.uv_min[1] - gap) - mover.uv_max[1]
+    candidates.append((abs(dv), 0.0, dv))
+
+    inside = [
+        item
+        for item in candidates
+        if mover.uv_min[0] + item[1] >= -1e-6
+        and mover.uv_max[0] + item[1] <= 1.0 + 1e-6
+        and mover.uv_min[1] + item[2] >= -1e-6
+        and mover.uv_max[1] + item[2] <= 1.0 + 1e-6
+    ]
+    pool = inside or candidates
+    _, du, dv = min(pool, key=lambda item: item[0])
+    return du, dv
+
+
+def _fit_into_texture(islands: Sequence[_UVIsland]) -> float:
+    """Shrink and shift the layout so it lies inside [0,1].
+
+    Returns the scale factor that was applied (1.0 means it already fitted).
+    The scale is uniform for the whole layout, so the islands keep their
+    relative density.
+    """
+    if not islands:
+        return 1.0
+    u_min = min(island.uv_min[0] for island in islands)
+    v_min = min(island.uv_min[1] for island in islands)
+    u_max = max(island.uv_max[0] for island in islands)
+    v_max = max(island.uv_max[1] for island in islands)
+
+    factor = 1.0
+    extent = max(u_max - u_min, v_max - v_min)
+    if extent > 1.0:
+        factor = 1.0 / extent
+        centre = ((u_min + u_max) * 0.5, (v_min + v_max) * 0.5)
+        for island in islands:
+            island.scale(factor, centre)
+        u_min = min(island.uv_min[0] for island in islands)
+        v_min = min(island.uv_min[1] for island in islands)
+        u_max = max(island.uv_max[0] for island in islands)
+        v_max = max(island.uv_max[1] for island in islands)
+
+    du = 0.0
+    dv = 0.0
+    if u_min < 0.0:
+        du = -u_min
+    elif u_max > 1.0:
+        du = 1.0 - u_max
+    if v_min < 0.0:
+        dv = -v_min
+    elif v_max > 1.0:
+        dv = 1.0 - v_max
+    for island in islands:
+        island.move(du, dv)
+    return factor
+
+
+def repair_overlaps(
+    obj, margin: Optional[float] = None, max_passes: int = 24
+) -> Dict:
+    """Nudge the overlapping islands of *obj* apart.
+
+    Only the islands that share pixels move, and only by the distance needed
+    to clear each other plus *margin*. The rest of the layout stays where the
+    user put it. If the nudged layout no longer fits the texture, the whole
+    layout is scaled down uniformly.
+
+    Returns a report: how many pairs overlapped before and after, how many
+    islands moved, and the scale factor.
+    """
+    settings = settings_from_scene()
+    gap = settings.margin if margin is None else float(margin)
+    gap = max(0.0, min(0.25, gap))
+    report = {
+        "object": getattr(obj, "name", ""),
+        "ok": False,
+        "changed": False,
+        "pairs_before": 0,
+        "pairs_after": 0,
+        "moved": 0,
+        "scale": 1.0,
+        "error": "",
+    }
+    if getattr(obj, "type", "") != "MESH":
+        report["error"] = "not a mesh"
+        return report
+    mesh = getattr(obj, "data", None)
+    if mesh is None or not getattr(mesh, "uv_layers", None):
+        report["error"] = "no UV layer"
+        return report
+
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        uv_layer = bm.loops.layers.uv.active
+        if uv_layer is None:
+            report["error"] = "no UV layer"
+            return report
+        islands = _collect_repair_islands(bm, uv_layer)
+        before = _overlap_pairs(islands)
+        report["pairs_before"] = len(before)
+        if not before:
+            report["ok"] = True
+            return report
+
+        moved = 0
+        for _ in range(max(1, int(max_passes))):
+            pairs = _overlap_pairs(islands)
+            if not pairs:
+                break
+            progressed = False
+            for i, j in pairs:
+                first, second = islands[i], islands[j]
+                # An earlier move in this pass may have separated the pair.
+                if not _island_boxes_cross(first, second):
+                    continue
+                if first.area <= second.area:
+                    mover, other = first, second
+                else:
+                    mover, other = second, first
+                du, dv = _escape_vector(other, mover, gap)
+                if du == 0.0 and dv == 0.0:
+                    continue
+                mover.move(du, dv)
+                moved += 1
+                progressed = True
+            if not progressed:
+                break
+
+        report["moved"] = moved
+        report["scale"] = _fit_into_texture(islands)
+        report["pairs_after"] = len(_overlap_pairs(islands))
+        report["changed"] = moved > 0
+        report["ok"] = True
+        bm.to_mesh(mesh)
+        mesh.update()
+        return report
+    finally:
+        bm.free()
+
+
+def repair_overlap_scene(objects: Sequence, margin: Optional[float] = None) -> List[Dict]:
+    """Repair the overlaps of several objects, one after another."""
+    return [repair_overlaps(obj, margin) for obj in objects]
 
 
 # --- the density ------------------------------------------------------------
@@ -2010,6 +2458,65 @@ def match_density_tool(target=None, objects=None, **kwargs) -> str:
         lines.append(
             f"The islands of {changed} object(s) were scaled and packed. "
             "Ctrl+Z puts the old layout back."
+        )
+    return "\n".join(lines)
+
+
+@tools.tool(
+    "uv.fix_overlaps",
+    "Fix overlapping UVs",
+    "Spread the UV islands that really share texture pixels. Each island is "
+    "moved to the nearest free spot, so the rest of the layout survives. "
+    "Returns how many pairs were fixed and how many are left; overlaps inside "
+    "one island need a seam.",
+    params=("margin", "objects"),
+)
+def fix_overlaps_tool(margin=None, objects=None, **kwargs) -> str:
+    """Tool entry point: spread the overlapping islands apart."""
+    settings = settings_from_scene()
+    gap = float(margin) if margin is not None else settings.margin
+    targets = []
+    if isinstance(objects, str):
+        targets = [
+            obj
+            for obj in bpy.context.scene.objects
+            if obj.type == "MESH" and obj.name == objects
+        ]
+    elif isinstance(objects, list):
+        targets = [
+            obj
+            for obj in bpy.context.scene.objects
+            if obj.type == "MESH" and obj.name in objects
+        ]
+    if not targets:
+        targets = scope_objects()
+
+    reports = repair_overlap_scene(targets, gap)
+    done = [r for r in reports if r.get("ok")]
+    if not done:
+        problems = "; ".join(
+            f"{r['object']}: {r.get('error', 'failed')}" for r in reports
+        )
+        return f"Nothing was changed: {problems}"
+
+    pairs = sum(r["pairs_before"] for r in done)
+    left = sum(r["pairs_after"] for r in done)
+    moved = sum(r["moved"] for r in done)
+    lines = [
+        f"Overlapping island pairs: {pairs} before, {left} after; "
+        f"{moved} island(s) moved."
+    ]
+    scaled = [r for r in done if r.get("scale", 1.0) < 0.999]
+    if scaled:
+        factor = min(r["scale"] for r in scaled)
+        lines.append(
+            f"The layout was scaled to {factor:.3f} to stay inside [0,1]; "
+            "the density stays even."
+        )
+    if left:
+        lines.append(
+            "The remaining overlaps are inside one island (shared topology or "
+            "a symmetric layout) - add a seam to split them."
         )
     return "\n".join(lines)
 
