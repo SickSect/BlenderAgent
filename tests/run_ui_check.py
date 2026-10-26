@@ -227,14 +227,24 @@ def part_tabs():
     if prop is None:
         return
     items = [item.identifier for item in prop.enum_items]
+    labels = []
     if not items:
         # A dynamic enum: the items come from the callback at draw time, so
         # the static list in RNA is empty by design.
         ui = importlib.import_module("blender_addon.ui")
-        items = [entry[0] for entry in ui._tab_items(bpy.context.scene, bpy.context)]
+        entries = ui._tab_items(bpy.context.scene, bpy.context)
+        items = [entry[0] for entry in entries]
+        labels = [entry[1] for entry in entries]
     check(
         items == ["TEXTURE", "MESH", "UV", "BAKE", "EXPORT"],
         f"the tabs are the five stages ({items})",
+    )
+    # A label that looks like a key means the i18n lookup failed: the enum
+    # identifiers are upper case, the i18n keys are lower case.
+    broken = [label for label in labels if label.startswith("tab.")]
+    check(
+        not broken,
+        f"every tab has a real label ({labels})",
     )
     # The labels come from i18n through a callback, so they follow the
     # language without a re-registration.

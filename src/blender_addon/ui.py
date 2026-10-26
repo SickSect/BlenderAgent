@@ -93,9 +93,13 @@ def _tab_items(self, context):
     A callback instead of a fixed list: the names of the enum items are baked
     into RNA at registration time, and a language switch must not need a
     re-registration of the whole add-on.
+
+    The i18n keys are lower case ("tab.texture"), while the enum identifiers
+    are upper case by convention - so the key is built from the lower case
+    form, or the lookup fails and the button shows the key itself.
     """
     return [
-        (tab_id, i18n.T("tab." + tab_id), i18n.T("tab." + tab_id))
+        (tab_id, i18n.T("tab." + tab_id.lower()), i18n.T("tab." + tab_id.lower()))
         for tab_id in _TABS
     ]
 
