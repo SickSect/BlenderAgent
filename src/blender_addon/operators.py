@@ -19,6 +19,7 @@ from . import (
     heightmap,
     i18n,
     materials,
+    mesh,
     nodemenu,
     presets,
     objects,
@@ -1123,6 +1124,21 @@ class GAA_OT_import_textures(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _show_tab(context, tab: str) -> None:
+    """Show the tab the given action belongs to.
+
+    The panel is split by task, so the tab should follow the work: pressing
+    "export" leaves the export tools on screen, where the next step is.
+    """
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return
+    try:
+        scene.gaa_tab = tab
+    except Exception:  # noqa: BLE001 - an unknown tab is not worth a crash
+        pass
+
+
 class GAA_OT_export_asset(bpy.types.Operator):
     """Экспортировать выделенное для игры"""
 
@@ -1141,6 +1157,7 @@ class GAA_OT_export_asset(bpy.types.Operator):
     def execute(self, context):
         # export.export() turns a file path into its folder and creates it.
         folder = self.filepath or export._default_folder()
+        _show_tab(context, "EXPORT")
         result = export.export(folder, self.format, strict=False)
         report = export._report(result)
         if result.get("ok"):
@@ -1162,6 +1179,7 @@ class GAA_OT_check_export(bpy.types.Operator):
     bl_options = {"REGISTER"}
 
     def execute(self, context):
+        _show_tab(context, "EXPORT")
         try:
             message = export.report()
         except Exception as exc:  # noqa: BLE001
@@ -1408,6 +1426,177 @@ class GAA_OT_fix_uv_overlap(bpy.types.Operator):
             {"INFO"},
             i18n.T("uv.overlap_done", before=before, after=after),
         )
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_mesh_check(bpy.types.Operator):
+    """Проверить сетку активного объекта"""
+
+    bl_idname = "gaa.mesh_check"
+    bl_label = "Проверить сетку"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        if obj is None:
+            self.report({"WARNING"}, i18n.T("mesh.no_object"))
+            return {"CANCELLED"}
+        if obj.type != "MESH":
+            self.report({"WARNING"}, i18n.T("mesh.not_mesh", name=obj.name))
+            return {"CANCELLED"}
+        _show_tab(context, "MESH")
+        try:
+            settings = mesh.settings_from_scene(context.scene)
+            report = mesh.analyze(obj)
+            lines = [mesh.format_report(report, settings["budget"])]
+            found = mesh.check(obj, settings["budget"])
+            if found:
+                counts = findings.summary(found)
+                lines.append(
+                    i18n.T(
+                        "mesh.problems",
+                        errors=counts[findings.ERROR],
+                        warnings=counts[findings.WARNING],
+                        notes=counts[findings.INFO],
+                    )
+                )
+                for finding in found:
+                    lines.append(f"- {finding.text()}")
+            else:
+                lines.append(i18n.T("mesh.clean"))
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=exc))
+            return {"CANCELLED"}
+
+        state.add_display("result", "\n".join(lines))
+        self.report({"INFO"}, i18n.T("mesh.checked"))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_mesh_retopo(bpy.types.Operator):
+    """Сделать игровую сетку по бюджету треугольников"""
+
+    bl_idname = "gaa.mesh_retopo"
+    bl_label = "Ретопология"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        if obj is None:
+            self.report({"WARNING"}, i18n.T("mesh.no_object"))
+            return {"CANCELLED"}
+        if obj.type != "MESH":
+            self.report({"WARNING"}, i18n.T("mesh.not_mesh", name=obj.name))
+            return {"CANCELLED"}
+        _show_tab(context, "MESH")
+        try:
+            settings = mesh.settings_from_scene(context.scene)
+            report = mesh.retopo(obj, settings["budget"], settings["shrinkwrap"])
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not report.get("ok"):
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=report.get("error")))
+            state.add_display("error", i18n.T("mesh.failed", exc=report.get("error")))
+            return {"CANCELLED"}
+
+        lines = [
+            i18n.T(
+                "mesh.retopo_done",
+                name=report["object"],
+                source=report["source"],
+                quads=report["quads"],
+                tris=report["tris"],
+                depth=report["depth"],
+                budget=report["budget"],
+                seconds=round(report["seconds"], 1),
+            )
+        ]
+        error = report.get("deviation") or {}
+        if error.get("samples"):
+            lines.append(
+                i18n.T(
+                    "mesh.retopo_deviation",
+                    mean=round(error["mean"] * 1000, 1),
+                    worst=round(error["max"] * 1000, 1),
+                )
+            )
+        if report.get("non_manifold"):
+            lines.append(
+                i18n.T("mesh.retopo_non_manifold", n=report["non_manifold"])
+            )
+        for note in report.get("notes", []):
+            lines.append(f"- {note}")
+        lines.append(i18n.T("mesh.retopo_next"))
+
+        state.add_display("result", "\n".join(lines))
+        self.report({"INFO"}, i18n.T("mesh.retopo_done_short"))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_mesh_lod(bpy.types.Operator):
+    """Построить цепочку уровней детализации рядом с объектом"""
+
+    bl_idname = "gaa.mesh_lod"
+    bl_label = "Цепочка LOD"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        if obj is None:
+            self.report({"WARNING"}, i18n.T("mesh.no_object"))
+            return {"CANCELLED"}
+        if obj.type != "MESH":
+            self.report({"WARNING"}, i18n.T("mesh.not_mesh", name=obj.name))
+            return {"CANCELLED"}
+        _show_tab(context, "MESH")
+        try:
+            settings = mesh.settings_from_scene(context.scene)
+            report = mesh.lod_chain(obj, settings["levels"])
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not report.get("ok"):
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=report.get("error")))
+            return {"CANCELLED"}
+
+        lines = [i18n.T("mesh.lod_done", name=report["source"])]
+        for level in report["levels"]:
+            lines.append(
+                i18n.T(
+                    "mesh.lod_level",
+                    name=level["name"],
+                    faces=level["faces"],
+                    tris=level["tris"],
+                )
+            )
+        state.add_display("result", "\n".join(lines))
+        self.report({"INFO"}, i18n.T("mesh.lod_done_short"))
+        state._redraw()
+        return {"FINISHED"}
+
+
+class GAA_OT_set_tab(bpy.types.Operator):
+    """Показать другую вкладку панели"""
+
+    bl_idname = "gaa.set_tab"
+    bl_label = "Вкладка"
+    bl_options = {"REGISTER"}
+
+    tab: StringProperty(default="TEXTURE")
+
+    def execute(self, context):
+        scene = getattr(context, "scene", None)
+        if scene is not None:
+            try:
+                scene.gaa_tab = self.tab
+            except Exception:  # noqa: BLE001 - an unknown tab is ignored
+                pass
         state._redraw()
         return {"FINISHED"}
 
@@ -1940,6 +2129,10 @@ _classes = (
     GAA_OT_node_set_normal,
     GAA_OT_procedural_build,
     GAA_OT_fix_uv_overlap,
+    GAA_OT_mesh_check,
+    GAA_OT_mesh_retopo,
+    GAA_OT_mesh_lod,
+    GAA_OT_set_tab,
 )
 
 # bl_label and the class docstring (Blender's tooltip) are copied into RNA at
@@ -1985,6 +2178,9 @@ _OPERATOR_KEYS = {
     "gaa.node_set_roughness": "op.node_set_roughness",
     "gaa.node_set_normal": "op.node_set_normal",
     "gaa.procedural_build": "op.procedural_build",
+    "gaa.mesh_check": "op.mesh_check",
+    "gaa.mesh_retopo": "op.mesh_retopo",
+    "gaa.mesh_lod": "op.mesh_lod",
 }
 
 

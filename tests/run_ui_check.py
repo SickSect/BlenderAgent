@@ -169,6 +169,10 @@ def part_operator_props():
         "gaa_bake_samples",
         "gaa_bake_maps",
         "gaa_bake_naming",
+        "gaa_retopo_budget",
+        "gaa_retopo_shrinkwrap",
+        "gaa_lod_levels",
+        "gaa_tab",
     )
     for name in scene_props:
         check(
@@ -215,6 +219,51 @@ def part_angles():
     )
 
 
+def part_tabs():
+    """The panel is split into tabs, and the tabs must work."""
+    print("\n== the tabs")
+    prop = bpy.types.Scene.bl_rna.properties.get("gaa_tab")
+    check(prop is not None, "Scene.gaa_tab exists")
+    if prop is None:
+        return
+    items = [item.identifier for item in prop.enum_items]
+    if not items:
+        # A dynamic enum: the items come from the callback at draw time, so
+        # the static list in RNA is empty by design.
+        ui = importlib.import_module("blender_addon.ui")
+        items = [entry[0] for entry in ui._tab_items(bpy.context.scene, bpy.context)]
+    check(
+        items == ["TEXTURE", "MESH", "UV", "BAKE", "EXPORT"],
+        f"the tabs are the five stages ({items})",
+    )
+    # The labels come from i18n through a callback, so they follow the
+    # language without a re-registration.
+    check(
+        bpy.types.Scene.bl_rna.properties["gaa_tab"].type == "ENUM",
+        "the tab is an enum",
+    )
+
+    # The operator switches the tab.
+    check(hasattr(bpy.ops.gaa, "set_tab"), "gaa.set_tab is registered")
+    bpy.context.scene.gaa_tab = "TEXTURE"
+    bpy.ops.gaa.set_tab(tab="EXPORT")
+    check(
+        bpy.context.scene.gaa_tab == "EXPORT",
+        f"the tab switches ({bpy.context.scene.gaa_tab})",
+    )
+
+    # An action shows the tab of its own stage.
+    bpy.context.scene.gaa_tab = "TEXTURE"
+    try:
+        bpy.ops.gaa.check_export()
+    except Exception:
+        pass
+    check(
+        bpy.context.scene.gaa_tab == "EXPORT",
+        f"the export check opens the export tab ({bpy.context.scene.gaa_tab})",
+    )
+
+
 def main():
     part_icons()
     # The add-on is registered once for the whole run: the checks below look
@@ -225,6 +274,7 @@ def main():
         part_operator_ids()
         part_operator_props()
         part_angles()
+        part_tabs()
         part_operator_returns()
         part_panel_draw()
     finally:

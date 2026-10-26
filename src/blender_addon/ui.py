@@ -18,7 +18,7 @@ from __future__ import annotations
 import textwrap
 
 import bpy
-from bpy.props import CollectionProperty, IntProperty, StringProperty
+from bpy.props import CollectionProperty, EnumProperty, IntProperty, StringProperty
 
 from . import i18n, preferences, presets, state
 
@@ -76,6 +76,155 @@ def popup_wrap_width(width_px: int) -> int:
     return max(30, (width_px - _POPUP_PADDING) // _POPUP_FONT_WIDTH)
 
 
+# -- the tabs ----------------------------------------------------------------
+#
+# The panel used to show every button at once, which made the eye swim and
+# hid the question "what am I doing right now?". The tools are grouped by the
+# stage of the pipeline they belong to, and only the current group is drawn.
+
+# The tab ids, in the order they are drawn. The labels come from i18n, so
+# they follow the language.
+_TABS = ("TEXTURE", "MESH", "UV", "BAKE", "EXPORT")
+
+
+def _tab_items(self, context):
+    """The tab list, with the labels of the current language.
+
+    A callback instead of a fixed list: the names of the enum items are baked
+    into RNA at registration time, and a language switch must not need a
+    re-registration of the whole add-on.
+    """
+    return [
+        (tab_id, i18n.T("tab." + tab_id), i18n.T("tab." + tab_id))
+        for tab_id in _TABS
+    ]
+
+
+def _draw_textures_tab(layout, context):
+    """Textures: materials, paths, mass operations, procedural graphs."""
+    box = layout.box()
+    box.label(text=i18n.T("textures.box"), icon="TEXTURE")
+    # Build a material straight from a folder of texture maps.
+    row = box.row(align=True)
+    row.operator("gaa.pbr_from_folder", icon="FILE_FOLDER")
+    row.operator("gaa.apply_textures_from_folder", icon="IMPORT")
+    # The material doctor: find what is wrong with the materials of the
+    # scene. The second button applies the repairs it can make on its own.
+    row = box.row(align=True)
+    row.operator("gaa.material_doctor", icon="CHECKMARK")
+    row.operator("gaa.material_fix", icon="FILE_REFRESH")
+    # Make the project travel with its textures, and keep the paths portable.
+    row = box.row(align=True)
+    row.operator("gaa.pack_textures", icon="PACKAGE")
+    row.operator("gaa.fix_paths", icon="FILE_REFRESH")
+    row.operator("gaa.texture_report", icon="INFO")
+    # Mass operations: the material of the active object onto the whole
+    # selection, and who else uses that material.
+    row = box.row(align=True)
+    row.operator("gaa.assign_to_selection", icon="GROUP")
+    row.operator("gaa.find_material_users", icon="QUESTION")
+    # Procedural materials: built from a description, graph assembled by code.
+    row = box.row(align=True)
+    row.operator("gaa.procedural_build", icon="ADD")
+    # The author's own materials: the layered graphs a small model cannot
+    # invent. A dropdown of the presets.
+    if presets.all_presets():
+        row.operator_menu_enum(
+            "gaa.preset_build",
+            "preset",
+            text=i18n.T("procedural.presets"),
+        )
+    # The whole workflow in one click: a texture folder in - a ready project
+    # out (material, assignment, packing, export check).
+    box = layout.box()
+    box.label(text=i18n.T("project.title"), icon="IMPORT")
+    box.operator("gaa.import_textures", icon="FILE_FOLDER")
+
+
+def _draw_mesh_tab(layout, context):
+    """The mesh: what is wrong with it, and how to make it a game asset."""
+    box = layout.box()
+    box.label(text=i18n.T("mesh.title"), icon="MESH_CUBE")
+    row = box.row(align=True)
+    row.operator("gaa.mesh_check", icon="CHECKMARK")
+    row.operator("gaa.mesh_retopo", icon="MOD_REMESH")
+    row.operator("gaa.mesh_lod", icon="MOD_DECIM")
+    # The budget is a number, not a preset: the user knows the target.
+    scene = getattr(context, "scene", None)
+    if scene is not None:
+        settings = box.row(align=True)
+        settings.scale_y = 0.85
+        settings.prop(scene, "gaa_retopo_budget", text=i18n.T("mesh.budget"))
+        settings.prop(scene, "gaa_lod_levels", text=i18n.T("mesh.levels"))
+        box.prop(
+            scene,
+            "gaa_retopo_shrinkwrap",
+            text=i18n.T("mesh.shrinkwrap"),
+        )
+
+
+def _draw_uv_tab(layout, context):
+    """UV: the texel density is invisible in the editor and very visible in a game."""
+    box = layout.box()
+    box.label(text=i18n.T("uv.title"), icon="UV")
+    scene = getattr(context, "scene", None)
+    if scene is not None:
+        layout.prop(scene, "gaa_uv_angle", text=i18n.T("uv.angle"))
+        layout.prop(
+            scene,
+            "gaa_uv_use_existing_seams",
+            text=i18n.T("uv.own_seams"),
+        )
+    row = box.row(align=True)
+    row.operator("gaa.unwrap_uv", icon="GROUP_UVS")
+    row.operator("gaa.match_density", icon="FULLSCREEN_ENTER")
+    row.operator("gaa.check_uv", icon="CHECKMARK")
+    # The overlap repair gets its own row: it is the answer to the check
+    # above and it must be findable without hovering every small button.
+    row = box.row(align=True)
+    row.operator("gaa.fix_uv_overlap", icon="ARROW_LEFTRIGHT")
+    row.operator("gaa.build_atlas", icon="TEXTURE")
+    row = box.row(align=True)
+    row.operator("gaa.export_uv_kit", icon="EXPORT")
+    row.operator("gaa.import_atlas", icon="IMPORT")
+
+
+def _draw_bake_tab(layout, context):
+    """Baking: turn a procedural material into textures the game can read."""
+    box = layout.box()
+    box.label(text=i18n.T("bake.title"), icon="RENDER_STILL")
+    row = box.row(align=True)
+    row.operator("gaa.bake_textures", icon="RENDER_STILL")
+    row.operator("gaa.height_to_normal", icon="NORMALS_VERTEX")
+    # The bake renders every pixel: the size is the whole cost. The settings
+    # live on the scene, not on the operator - a property drawn on an operator
+    # instance is thrown away on the next redraw.
+    scene = getattr(context, "scene", None)
+    if scene is not None:
+        settings = box.row(align=True)
+        settings.scale_y = 0.85
+        settings.prop(scene, "gaa_bake_size", text="")
+        settings.prop(scene, "gaa_bake_samples", text="")
+        settings.prop(scene, "gaa_bake_maps", text="")
+        settings.prop(scene, "gaa_bake_naming", text="")
+    # The two finishing touches of the pipeline.
+    finish = box.row(align=True)
+    finish.operator("gaa.pack_orm", icon="TEXTURE")
+    finish.operator("gaa.render_preview", icon="RENDER_STILL")
+
+
+def _draw_export_tab(layout, context):
+    """Export: the readiness check and the file the engine opens."""
+    box = layout.box()
+    box.label(text=i18n.T("export.title"), icon="EXPORT")
+    box.operator("gaa.check_export", icon="CHECKMARK")
+    row = box.row(align=True)
+    glb = row.operator("gaa.export_asset", text="GLB", icon="EXPORT")
+    glb.format = "glb"
+    fbx = row.operator("gaa.export_asset", text="FBX", icon="EXPORT")
+    fbx.format = "fbx"
+
+
 def draw_chat(
     layout,
     context,
@@ -114,6 +263,29 @@ def draw_chat(
         row.label(text=i18n.T("status.ready_model", model=model), icon="CHECKMARK")
     else:
         row.label(text=i18n.T("status.ready"), icon="RADIOBUT_ON")
+
+    # -- the tabs ---------------------------------------------------------
+    # The tools are grouped by what they are for, so only the ones that
+    # belong to the current task are on screen.
+    scene = getattr(context, "scene", None)
+    current = getattr(scene, "gaa_tab", "TEXTURE") if scene is not None else "TEXTURE"
+    if scene is not None:
+        row = layout.row(align=True)
+        row.scale_y = 0.9
+        # An enum drawn expanded is a row of switches - the usual way to
+        # make sub-tabs in a panel.
+        row.prop(scene, "gaa_tab", expand=True)
+
+    if current == "MESH":
+        _draw_mesh_tab(layout, context)
+    elif current == "UV":
+        _draw_uv_tab(layout, context)
+    elif current == "BAKE":
+        _draw_bake_tab(layout, context)
+    elif current == "EXPORT":
+        _draw_export_tab(layout, context)
+    else:
+        _draw_textures_tab(layout, context)
 
     # -- history ---------------------------------------------------------
     if len(wm.gaa_messages):
@@ -212,110 +384,6 @@ def draw_chat(
     for preset_id in _PRESET_IDS:
         props = grid.operator("gaa.use_preset", text=i18n.T("preset." + preset_id))
         props.preset = preset_id
-    # Build a material straight from a folder of texture maps — the preset
-    # above only *asks* the assistant to do it; this button does it itself.
-    box.operator("gaa.pbr_from_folder", icon="FILE_FOLDER")
-
-    # Apply textures from folder to existing materials on selected objects.
-    row = box.row(align=True)
-    row.operator("gaa.apply_textures_from_folder", icon="IMPORT")
-
-    # The material doctor: find what is wrong with the materials of the
-    # scene. The second button applies the repairs it can make on its own.
-    row = box.row(align=True)
-    row.operator("gaa.material_doctor", icon="CHECKMARK")
-    row.operator("gaa.material_fix", icon="FILE_REFRESH")
-
-    # Textures: make the project travel with its textures, and keep the paths
-    # portable. These three are the everyday hygiene of a .blend file.
-    box = layout.box()
-    box.label(text=i18n.T("textures.box"), icon="TEXTURE")
-    row = box.row(align=True)
-    row.operator("gaa.pack_textures", icon="PACKAGE")
-    row.operator("gaa.fix_paths", icon="FILE_REFRESH")
-    row.operator("gaa.texture_report", icon="INFO")
-
-    # Mass operations: the material of the active object onto the whole
-    # selection, and who else uses that material.
-    box = layout.box()
-    box.label(text=i18n.T("bulk.box"), icon="GROUP")
-    row = box.row(align=True)
-    row.operator("gaa.assign_to_selection", icon="GROUP")
-    row.operator("gaa.find_material_users", icon="QUESTION")
-
-    # The whole workflow in one click: a texture folder in - a ready project
-    # out (material, assignment, packing, export check).
-    box = layout.box()
-    box.label(text=i18n.T("project.title"), icon="IMPORT")
-    row = box.row(align=True)
-    row.operator("gaa.import_textures", icon="FILE_FOLDER")
-    row.operator("gaa.check_export", icon="EXPORT")
-    # The last mile: the file the engine opens.
-    export_row = box.row(align=True)
-    glb = export_row.operator("gaa.export_asset", text="GLB", icon="EXPORT")
-    glb.format = "glb"
-    fbx = export_row.operator("gaa.export_asset", text="FBX", icon="EXPORT")
-    fbx.format = "fbx"
-
-    # UV: the texel density is the one problem that is invisible in the
-    # editor and very visible in a game.
-    box = layout.box()
-    box.label(text=i18n.T("uv.title"), icon="UV")
-    scene = getattr(context, "scene", None)
-    if scene is not None:
-        layout.prop(scene, "gaa_uv_angle", text=i18n.T("uv.angle"))
-        layout.prop(
-            scene,
-            "gaa_uv_use_existing_seams",
-            text=i18n.T("uv.own_seams"),
-        )
-    row = box.row(align=True)
-    row.operator("gaa.unwrap_uv", icon="GROUP_UVS")
-    row.operator("gaa.match_density", icon="FULLSCREEN_ENTER")
-    row.operator("gaa.check_uv", icon="CHECKMARK")
-    # The overlap repair gets its own row: it is the answer to the check
-    # above and it must be findable without hovering every small button.
-    row = box.row(align=True)
-    row.operator("gaa.fix_uv_overlap", icon="ARROW_LEFTRIGHT")
-    row.operator("gaa.build_atlas", icon="TEXTURE")
-    row = box.row(align=True)
-    row.operator("gaa.export_uv_kit", icon="EXPORT")
-    row.operator("gaa.import_atlas", icon="IMPORT")
-
-    # Baking: turn a procedural material into textures the game can read.
-    box = layout.box()
-    box.label(text=i18n.T("bake.title"), icon="RENDER_STILL")
-    row = box.row(align=True)
-    row.operator("gaa.bake_textures", icon="RENDER_STILL")
-    row.operator("gaa.height_to_normal", icon="NORMALS_VERTEX")
-    # The bake renders every pixel: the size is the whole cost. The settings
-    # live on the scene, not on the operator - a property drawn on an operator
-    # instance is thrown away on the next redraw.
-    scene = getattr(context, "scene", None)
-    if scene is not None:
-        settings = box.row(align=True)
-        settings.scale_y = 0.85
-        settings.prop(scene, "gaa_bake_size", text="")
-        settings.prop(scene, "gaa_bake_samples", text="")
-        settings.prop(scene, "gaa_bake_maps", text="")
-        settings.prop(scene, "gaa_bake_naming", text="")
-    # The two finishing touches of the pipeline.
-    finish = box.row(align=True)
-    finish.operator("gaa.pack_orm", icon="TEXTURE")
-    finish.operator("gaa.render_preview", icon="RENDER_STILL")
-
-    # Procedural materials: built from a description, graph assembled by code.
-    box = layout.box()
-    box.label(text=i18n.T("procedural.title"), icon="NODE_MATERIAL")
-    box.operator("gaa.procedural_build", icon="ADD")
-    # The author's own materials: the layered graphs a small model cannot
-    # invent. A dropdown of the presets.
-    if presets.all_presets():
-        box.operator_menu_enum(
-            "gaa.preset_build",
-            "preset",
-            text=i18n.T("procedural.presets"),
-        )
 
     row = layout.row(align=True)
     row.operator("gaa.clear", icon="TRASH")
@@ -382,6 +450,17 @@ _classes = (GAAChatMessage, GAA_UL_messages, GAA_PT_main, GAA_PT_shader, GAA_PT_
 def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
+    # Which group of tools is on screen. The labels are filled in by the
+    # callback, so they follow the language without a re-registration.
+    bpy.types.Scene.gaa_tab = EnumProperty(
+        name="Вкладка / Tab",
+        description=(
+            "Какая группа инструментов открыта / Which group of tools is open"
+        ),
+        items=_tab_items,
+        # With a callback the default is an index, not a name: 0 is TEXTURE.
+        default=0,
+    )
     bpy.types.WindowManager.gaa_messages = CollectionProperty(type=GAAChatMessage)
     bpy.types.WindowManager.gaa_active = IntProperty(default=0)
     bpy.types.WindowManager.gaa_input = StringProperty(
@@ -395,5 +474,9 @@ def unregister():
     del bpy.types.WindowManager.gaa_messages
     del bpy.types.WindowManager.gaa_active
     del bpy.types.WindowManager.gaa_input
+    try:
+        del bpy.types.Scene.gaa_tab
+    except Exception:  # noqa: BLE001 - the property may already be gone
+        pass
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

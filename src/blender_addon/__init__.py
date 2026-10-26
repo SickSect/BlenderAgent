@@ -28,7 +28,7 @@ bl_info = {
 
 import bpy
 
-from . import api, baking, nodemenu, operators, preferences, state, ui, uv
+from . import api, baking, mesh, nodemenu, operators, preferences, state, ui, uv
 
 _keymaps = []
 
@@ -68,6 +68,7 @@ def register():
     ui.register()
     uv.register()
     baking.register()
+    mesh.register()
     nodemenu.register()
     operators.register()
     # Publish the version-tolerant helpers where generated code can reach
@@ -87,6 +88,7 @@ def unregister():
     state.get_state().kill_worker()
     operators.unregister()
     nodemenu.unregister()
+    mesh.unregister()
     baking.unregister()
     uv.unregister()
     ui.unregister()

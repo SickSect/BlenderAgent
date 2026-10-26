@@ -107,6 +107,23 @@ STRINGS = {
         ),
         "op.build_atlas.label": "Атлас",
         "op.build_atlas.desc": "Собрать общий атлас из островов выделенных объектов",
+        "op.mesh_check.label": "Проверить сетку",
+        "op.mesh_check.desc": (
+            "Показать, что не так с сеткой: треугольники вместо квадов, дыры, "
+            "не-манifold рёбра, полюса, вытянутые треугольники и отклонение "
+            "от бюджета"
+        ),
+        "op.mesh_retopo.label": "Ретопология",
+        "op.mesh_retopo.desc": (
+            "Сделать игровую сетку по бюджету треугольников: перестроить в "
+            "квады, прижать к скульпту, чтобы сохранить силуэт. Оригинал "
+            "остаётся нетронутым"
+        ),
+        "op.mesh_lod.label": "Цепочка LOD",
+        "op.mesh_lod.desc": (
+            "Построить рядом с объектом уровни детализации: LOD1, LOD2 и так "
+            "далее, каждый легче предыдущего"
+        ),
         "op.export_uv_kit.label": "UV-комплект",
         "op.export_uv_kit.desc": "Выгрузить раскладку UV и манифест для рисования в другой программе",
         "op.import_atlas.label": "Импорт атласа",
@@ -411,6 +428,66 @@ STRINGS = {
         "uv.uv_no_texture": (
             "У объекта «{obj}» нет текстуры — плотность посчитать не по чему"
         ),
+        # -- panel tabs (ui.py) ---------------------------------------------
+        "tab.texture": "Текстуры",
+        "tab.mesh": "Сетка",
+        "tab.uv": "UV",
+        "tab.bake": "Запечь",
+        "tab.export": "Экспорт",
+        # -- mesh (mesh.py) -------------------------------------------------
+        "mesh.title": "Сетка",
+        "export.title": "Экспорт в игру",
+        "mesh.budget": "Бюджет треугольников",
+        "mesh.shrinkwrap": "Прижать к скульпту",
+        "mesh.levels": "Уровней LOD",
+        "mesh.no_object": "Нет активного объекта",
+        "mesh.not_mesh": "Объект «{name}» — не меш",
+        "mesh.clean": "Проблем не найдено.",
+        "mesh.checked": "Сетка проверена",
+        "mesh.failed": "Не удалось: {exc}",
+        "mesh.problems": (
+            "Проблемы: ошибок {errors}, предупреждений {warnings}, заметок {notes}"
+        ),
+        "mesh.retopo_done": (
+            "Из «{source}» сделан «{name}»: {quads} квадов ({tris} треугольников, "
+            "глубина {depth}, бюджет {budget}), {seconds} с"
+        ),
+        "mesh.retopo_done_short": "Ретопология готова",
+        "mesh.retopo_non_manifold": (
+            "В новой сетке {n} не-манifold рёбер — это наследие ремеша, "
+            "проверьте сетку перед экспортом"
+        ),
+        "mesh.retopo_deviation": (
+            "Отклонение от скульпта: в среднем {mean} мм, максимум {worst} мм"
+        ),
+        "mesh.retopo_next": "Оригинал не тронут. Теперь разверните новую сетку.",
+        "mesh.lod_done": "Цепочка LOD для «{name}»:",
+        "mesh.lod_done_short": "Цепочка LOD готова",
+        "mesh.lod_level": "- {name}: {faces} граней ({tris} треугольников)",
+        "mesh.mesh_no_uv": "У объекта «{obj}» нет UV-развёртки",
+        "mesh.mesh_all_triangles": (
+            "У объекта «{obj}» {tris} треугольников из {faces} граней — "
+            "играть с этим дорого"
+        ),
+        "mesh.mesh_non_manifold": (
+            "У объекта «{obj}» {n} рёбер с несколькими гранями — сетка не замкнута"
+        ),
+        "mesh.mesh_holes": "У объекта «{obj}» {n} рёбер на границе — в сетке дыры",
+        "mesh.mesh_doubles": (
+            "У объекта «{obj}»: {doubles} совпадающих вершин, {loose} висящих, "
+            "{wire} рёбер без граней"
+        ),
+        "mesh.mesh_poles": (
+            "У объекта «{obj}» {n} вершин с пятью и более гранями вокруг — "
+            "в этих местах будет залом"
+        ),
+        "mesh.mesh_stretched": (
+            "У объекта «{obj}» {n} вытянутых треугольников — они ломают нормали"
+        ),
+        "mesh.mesh_over_budget": (
+            "У объекта «{obj}» {n} треугольников при бюджете {budget}"
+        ),
+        "mesh.mesh_no_material": "У объекта «{obj}» нет материала",
         # -- export check (export.py) --------------------------------------
         "find.export_custom_shader": (
             "В материале «{mat}» используется {node} — экспорт в glTF/FBX его "
@@ -564,6 +641,23 @@ STRINGS = {
         ),
         "op.build_atlas.label": "Atlas",
         "op.build_atlas.desc": "Lay the islands of the selected objects into one shared atlas",
+        "op.mesh_check.label": "Check the mesh",
+        "op.mesh_check.desc": (
+            "Show what is wrong with the mesh: triangles instead of quads, holes, "
+            "non-manifold edges, poles, needle triangles and how far the face "
+            "count is from the budget"
+        ),
+        "op.mesh_retopo.label": "Retopology",
+        "op.mesh_retopo.desc": (
+            "Make a game mesh within the triangle budget: rebuild it in quads and "
+            "pull it onto the sculpt to keep the silhouette. The original stays "
+            "untouched"
+        ),
+        "op.mesh_lod.label": "LOD chain",
+        "op.mesh_lod.desc": (
+            "Build levels of detail next to the object: LOD1, LOD2 and so on, "
+            "each lighter than the previous one"
+        ),
         "op.export_uv_kit.label": "UV kit",
         "op.export_uv_kit.desc": "Export the UV layout and a manifest to paint in another program",
         "op.import_atlas.label": "Import atlas",
@@ -870,6 +964,67 @@ STRINGS = {
             "Object \"{obj}\" has no texture, so there is nothing to measure the "
             "density against"
         ),
+        # -- panel tabs (ui.py) ---------------------------------------------
+        "tab.texture": "Textures",
+        "tab.mesh": "Mesh",
+        "tab.uv": "UV",
+        "tab.bake": "Bake",
+        "tab.export": "Export",
+        # -- mesh (mesh.py) -------------------------------------------------
+        "mesh.title": "Mesh",
+        "export.title": "Export to a game",
+        "mesh.budget": "Triangle budget",
+        "mesh.shrinkwrap": "Shrinkwrap to the sculpt",
+        "mesh.levels": "LOD levels",
+        "mesh.no_object": "There is no active object",
+        "mesh.not_mesh": "Object \"{name}\" is not a mesh",
+        "mesh.clean": "No problems found.",
+        "mesh.checked": "The mesh was checked",
+        "mesh.failed": "Could not: {exc}",
+        "mesh.problems": (
+            "Problems: {errors} errors, {warnings} warnings, {notes} notes"
+        ),
+        "mesh.retopo_done": (
+            "Made \"{name}\" from \"{source}\": {quads} quads ({tris} triangles, "
+            "depth {depth}, budget {budget}), {seconds}s"
+        ),
+        "mesh.retopo_done_short": "The retopology is done",
+        "mesh.retopo_non_manifold": (
+            "The new mesh has {n} non-manifold edges - that is what the remesh "
+            "leaves behind, check the mesh before exporting"
+        ),
+        "mesh.retopo_deviation": (
+            "Distance from the sculpt: {mean} mm on average, {worst} mm at worst"
+        ),
+        "mesh.retopo_next": "The original is untouched. Now unwrap the new mesh.",
+        "mesh.lod_done": "LOD chain for \"{name}\":",
+        "mesh.lod_done_short": "The LOD chain is done",
+        "mesh.lod_level": "- {name}: {faces} faces ({tris} triangles)",
+        "mesh.mesh_no_uv": "Object \"{obj}\" has no UV unwrap",
+        "mesh.mesh_all_triangles": (
+            "Object \"{obj}\": {tris} triangles out of {faces} faces - too heavy "
+            "for a game"
+        ),
+        "mesh.mesh_non_manifold": (
+            "Object \"{obj}\" has {n} edges with more than two faces - the mesh "
+            "is not closed"
+        ),
+        "mesh.mesh_holes": "Object \"{obj}\" has {n} boundary edges - holes in the mesh",
+        "mesh.mesh_doubles": (
+            "Object \"{obj}\": {doubles} doubled vertices, {loose} loose, "
+            "{wire} edges without faces"
+        ),
+        "mesh.mesh_poles": (
+            "Object \"{obj}\" has {n} vertices with five or more faces around "
+            "them - that is where the shading breaks"
+        ),
+        "mesh.mesh_stretched": (
+            "Object \"{obj}\" has {n} needle triangles - they break the normals"
+        ),
+        "mesh.mesh_over_budget": (
+            "Object \"{obj}\" has {n} triangles, the budget is {budget}"
+        ),
+        "mesh.mesh_no_material": "Object \"{obj}\" has no material",
         # -- export check --------------------------------------------------
         "find.export_custom_shader": (
             "Material \"{mat}\" uses {node}, which the glTF/FBX exporters do "
