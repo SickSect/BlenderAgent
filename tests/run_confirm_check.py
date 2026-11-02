@@ -240,6 +240,46 @@ def part_history(state, tools):
     check(result.ok, "the history tool runs")
 
 
+def part_button_result(state, tools):
+    print("\n== a button result reaches the model")
+    # The buttons run the same tools the model can call. Without this the
+    # model answers as if the scene had not been touched.
+    chat = state.get_state()
+    before = len(chat.history)
+    state.add_display("result", "Checked 3 objects: nothing broken")
+    check(
+        len(chat.history) == before + 1,
+        f"the result was added to the history ({len(chat.history) - before})",
+    )
+    if chat.history:
+        entry = chat.history[-1]
+        check(entry["role"] == "user", f"it is a user message ({entry['role']})")
+        check(
+            "Checked 3 objects" in entry["content"],
+            f"the report is in it ({entry['content'][:60]})",
+        )
+    before = len(chat.history)
+    state.add_display("error", "The bake failed")
+    check(
+        len(chat.history) == before + 1,
+        "an error is remembered too",
+    )
+    # An assistant bubble is not a result and must not be mirrored.
+    before = len(chat.history)
+    state.add_display("assistant", "Sure, here is what I did")
+    check(
+        len(chat.history) == before,
+        "an assistant bubble is not mirrored into the history",
+    )
+    # The AI paths already put the report in themselves, so they opt out.
+    before = len(chat.history)
+    state.add_display("result", "Already in the history", remember=False)
+    check(
+        len(chat.history) == before,
+        "remember=False does not duplicate the report",
+    )
+
+
 # -- runner -----------------------------------------------------------------
 
 
@@ -256,6 +296,7 @@ def main():
         part_safe_tool(state, tools)
         part_preview(state, tools)
         part_history(state, tools)
+        part_button_result(state, tools)
     finally:
         package.unregister()
 

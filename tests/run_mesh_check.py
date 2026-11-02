@@ -247,6 +247,104 @@ def part_tools(mesh, tools):
             bpy.data.objects.remove(obj, do_unlink=True)
 
 
+def part_repair(mesh):
+    print("\n== the repair")
+    import bmesh
+
+    cube = make_cube("RepairCube")
+    # Break it: a hole, a doubled vertex and an empty face.
+    bm = bmesh.new()
+    bm.from_mesh(cube.data)
+    bm.faces.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[bm.faces[0]], context="FACES")
+    bm.verts.ensure_lookup_table()
+    bm.verts.new(bm.verts[0].co)  # a doubled vertex
+    bm.to_mesh(cube.data)
+    bm.free()
+
+    report = mesh.repair(cube, weld=0.0001, fill_holes=True)
+    check(report.get("ok") is True, f"the repair finished ({report.get('error')})")
+    check(report["welded"] >= 1, f"the doubled vertex was welded ({report['welded']})")
+    check(
+        report["before"]["holes"] > 0 and report["after"]["holes"] == 0,
+        f"the hole was closed ({report['before']['holes']} -> {report['after']['holes']})",
+    )
+    check(
+        report["after"]["doubles"] == 0,
+        f"no doubles are left ({report['after']['doubles']})",
+    )
+    check(
+        report["before"]["parts"] == report["after"]["parts"],
+        f"the part count did not change ({report['before']['parts']})",
+    )
+    bpy.data.objects.remove(cube, do_unlink=True)
+
+
+def part_transform(mesh):
+    print("\n== a model with a scale and a location")
+    # The shrinkwrap target must keep the transform of the source, or the
+    # projection lands on a surface somewhere else.
+    bpy.ops.mesh.primitive_cube_add(size=2)
+    obj = bpy.context.active_object
+    obj.name = "PlacedCube"
+    obj.scale = (26.0, 26.0, 26.0)
+    obj.location = (91.0, -289.0, 8.0)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    bpy.context.view_layer.update()
+
+    report = mesh.retopo(obj, 500, shrinkwrap=True)
+    check(report.get("ok") is True, f"the retopology finished ({report.get('error')})")
+    new = bpy.data.objects.get(report.get("object", ""))
+    if new is not None:
+        span = new.dimensions.x
+        check(
+            span > 1.0,
+            f"the result kept the size of the source ({span:.2f} m)",
+        )
+        check(
+            report.get("area_ratio", 9) < 3.0,
+            f"the surface did not blow up (x{report.get('area_ratio', 0):.2f})",
+        )
+        bpy.data.objects.remove(new, do_unlink=True)
+    bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def part_exact(mesh):
+    print("\n== the exact budget")
+    sphere = make_sphere("ExactSphere")
+    # The octree lands on a step; the voxel search lands on the budget.
+    small = mesh.retopo(sphere, 400, shrinkwrap=False, exact=True)
+    check(small.get("ok") is True, f"the exact mode finished ({small.get('error')})")
+    check(small.get("mode") == "voxel", f"it used the voxel mode ({small.get('mode')})")
+    check(
+        small.get("tris", 10 ** 9) <= 400,
+        f"the budget is respected ({small.get('tris')} <= 400)",
+    )
+    check(
+        small.get("tris", 0) >= 400 * 0.7,
+        f"it is close to the budget ({small.get('tris')} of 400)",
+    )
+    big = mesh.retopo(sphere, 1200, shrinkwrap=False, exact=True)
+    check(
+        big.get("tris", 0) > small.get("tris", 0),
+        f"a bigger budget gives a bigger mesh ({small.get('tris')} -> {big.get('tris')})",
+    )
+    # The octree mode is still the default, and it lands on a step far below
+    # the budget - that is exactly why the exact mode exists.
+    blocks = mesh.retopo(sphere, 400, shrinkwrap=False)
+    check(blocks.get("mode") == "blocks", f"the default is the octree ({blocks.get('mode')})")
+    check(
+        small.get("tris", 0) > blocks.get("tris", 0),
+        f"the exact mode gets closer than the octree "
+        f"({small.get('tris')} vs {blocks.get('tris')}, budget 400)",
+    )
+    for name in (small.get("object"), big.get("object"), blocks.get("object")):
+        obj = bpy.data.objects.get(name or "")
+        if obj:
+            bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.data.objects.remove(sphere, do_unlink=True)
+
+
 def main():
     package = load_package()
     package.register()
@@ -256,7 +354,10 @@ def main():
         clean_scene()
         part_analyze(mesh)
         part_findings(mesh)
+        part_repair(mesh)
         part_retopo(mesh)
+        part_transform(mesh)
+        part_exact(mesh)
         part_lod(mesh)
         part_settings(mesh)
         part_tools(mesh, tools)

@@ -160,7 +160,16 @@ def _wm():
     return wm
 
 
-def add_display(role: str, body: str) -> None:
+def add_display(role: str, body: str, remember: bool = True) -> None:
+    """Add a bubble to the chat.
+
+    A result or an error is also remembered for the model. The buttons run
+    the same tools the model can call, and without this the model would not
+    know that the user just pressed "Check the UVs" and what came back - it
+    would answer as if the scene had not been touched. The AI-driven paths
+    already put the report into the history themselves, so they pass
+    ``remember=False``.
+    """
     wm = _wm()
     if wm is None:
         return
@@ -168,6 +177,23 @@ def add_display(role: str, body: str) -> None:
     item.role = role
     item.body = body[:MAX_DISPLAY_CHARS]
     wm.gaa_active = len(wm.gaa_messages) - 1
+    if remember and role in ("result", "error") and body.strip():
+        _remember_display(role, body)
+
+
+def _remember_display(role: str, body: str) -> None:
+    """Put a button's report into the model-facing history."""
+    try:
+        chat = get_state()
+    except Exception:  # noqa: BLE001 - the history is optional, the bubble is not
+        return
+    key = "msg.button_result" if role == "result" else "msg.button_error"
+    chat.history.append(
+        {
+            "role": "user",
+            "content": i18n.T(key, report=body[:MAX_DISPLAY_CHARS]),
+        }
+    )
 
 
 def set_last_display(body: str) -> None:
@@ -655,7 +681,7 @@ class ChatState:
         # turn: only the *next* round gets a new bubble.
         self._keep_code(self.stream_buf)
 
-        add_display("result", report)
+        add_display("result", report, remember=False)
         self._ask_again(i18n.T("msg.tool_running", name=name))
         return True
 

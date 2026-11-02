@@ -43,6 +43,7 @@ from typing import Dict, List, Optional, Sequence
 
 import bmesh
 import bpy
+from mathutils import Vector
 
 from . import findings, tools
 
@@ -83,6 +84,7 @@ class MeshReport:
     doubles: int = 0
     poles: int = 0
     stretched: int = 0
+    zero_faces: int = 0
     area: float = 0.0
     uv_layers: List[str] = field(default_factory=list)
     materials: List[str] = field(default_factory=list)
@@ -158,6 +160,8 @@ def analyze(obj) -> MeshReport:
 
         # Needle triangles.
         for face in bm.faces:
+            if face.calc_area() < 1e-12:
+                report.zero_faces += 1
             if len(face.verts) != 3:
                 continue
             lengths = [edge.calc_length() for edge in face.edges]
@@ -350,32 +354,299 @@ def _apply_remesh(work, source_mesh, depth: int) -> int:
     return len(work.data.polygons)
 
 
+def _apply_voxel(work, source_mesh, voxel: float) -> int:
+    """Remesh *work* with the voxel mode; return the triangle count."""
+    work.data = source_mesh.copy()
+    for mod in list(work.modifiers):
+        work.modifiers.remove(mod)
+    mod = work.modifiers.new("gaa_voxel", "REMESH")
+    mod.mode = "VOXEL"
+    mod.voxel_size = max(1e-6, float(voxel))
+    _activate(work)
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+    return _triangle_count(work.data)
+
+
+def _pick_voxel(work, source_mesh, budget: int, diagonal: float):
+    """The finest voxel size whose triangle count is within the budget.
+
+    The octree depth only doubles the resolution, so the budget lands on a
+    step. The voxel size is continuous: the search walks it and stops at the
+    finest mesh that still fits, which is how the budget becomes a real knob.
+
+    The face count grows roughly as 1/voxel^2, so each measurement predicts
+    the next voxel instead of halving the interval blindly - three or four
+    remeshes instead of nine.
+    """
+    voxel = diagonal / 200.0
+    best = None
+    last = 0
+    for _ in range(5):
+        count = _apply_voxel(work, source_mesh, voxel)
+        last = count
+        if count <= budget:
+            best = (voxel, count)
+            if count >= budget * 0.95:
+                break
+            # Finer, but stay under the budget.
+            step = math.sqrt(count / budget) * 0.97
+        else:
+            step = math.sqrt(count / budget) * 1.03
+        next_voxel = voxel * step
+        if abs(next_voxel - voxel) < voxel * 0.02:
+            break
+        voxel = next_voxel
+    if best is None:
+        # Even the first try was over: the coarsest the loop reached is the
+        # answer, and the caller reports the gap.
+        return voxel, last
+    return best
+
+
 def _apply_shrinkwrap(work, target) -> None:
     """Pull the remeshed mesh onto the sculpt.
 
-    Two steps, and the second one is not optional. PROJECT moves every vertex
-    along its own normal, but a ray that points away from the surface never
-    hits it - measured on a sphere, up to 444 mm of the mesh stayed in the
-    air. NEAREST_SURFACEPOINT pulls every vertex to the closest point of the
-    sculpt, and after it the whole mesh sits on the source exactly.
+    One step, and it has to be NEAREST_SURFACEPOINT. PROJECT moves every
+    vertex along its own normal, and a ray that points through the model
+    comes out on the other side: measured on a head, that put vertices
+    362 mm away and grew the surface from 1.74 to 7.24 m2. NEAREST pulls
+    every vertex to the closest point of the sculpt instead - the whole mesh
+    then sits on the source (0.02 mm on the same head, 0.00 mm on a sphere).
     """
-    project = work.modifiers.new("gaa_shrinkwrap", "SHRINKWRAP")
-    project.target = target
-    project.wrap_method = "PROJECT"
-    project.use_project_x = True
-    project.use_project_y = True
-    project.use_project_z = True
-    project.use_positive_direction = True
-    project.use_negative_direction = True
-    project.offset = 0.0
-    _activate(work)
-    bpy.ops.object.modifier_apply(modifier=project.name)
-
     snap = work.modifiers.new("gaa_snap", "SHRINKWRAP")
     snap.target = target
     snap.wrap_method = "NEAREST_SURFACEPOINT"
     _activate(work)
     bpy.ops.object.modifier_apply(modifier=snap.name)
+
+
+def _bbox_diagonal(bm) -> float:
+    """The length of the bounding box diagonal of a bmesh."""
+    if not len(bm.verts):
+        return 1.0
+    xs = [v.co.x for v in bm.verts]
+    ys = [v.co.y for v in bm.verts]
+    zs = [v.co.z for v in bm.verts]
+    return Vector(
+        (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
+    ).length or 1.0
+
+
+def _repair_mesh(mesh, fill_holes: bool = True) -> Dict:
+    """Make a working copy of the source usable for a remesh.
+
+    A scanned model is usually a shell with a hole (the neck cut) and
+    thousands of coincident vertices. Remeshing that as it is gives garbage:
+    the octree closes the hole with its own geometry, and the shrinkwrap then
+    pulls both sides of a wall onto the same surface - the polygons come out
+    smeared. So the working copy is repaired first: the zero-area faces are
+    dropped, the duplicates are welded, the holes are filled and the normals
+    are made consistent.
+
+    The original mesh is never touched - this works on a copy.
+    """
+    out = {
+        "holes": 0,
+        "holes_filled": 0,
+        "doubles": 0,
+        "zero_faces": 0,
+        "remaining_holes": 0,
+        "error": "",
+    }
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        if not len(bm.faces):
+            return out
+
+        # 1. the faces that have no area
+        degenerate = [f for f in bm.faces if f.calc_area() < 1e-12]
+        out["zero_faces"] = len(degenerate)
+        if degenerate:
+            bmesh.ops.delete(bm, geom=degenerate, context="FACES")
+
+        # 2. the holes, counted **before** the weld: welding can close a
+        #    hole on its own, and the count must be the real one
+        boundary = [e for e in bm.edges if len(e.link_faces) == 1]
+        out["holes"] = len(boundary)
+
+        # 3. the vertices in the same place
+        before = len(bm.verts)
+        bmesh.ops.remove_doubles(
+            bm, verts=bm.verts[:], dist=_bbox_diagonal(bm) * 1e-5
+        )
+        out["doubles"] = before - len(bm.verts)
+
+        # 4. the holes, again - some of them the weld has closed
+        if fill_holes:
+            boundary = [e for e in bm.edges if len(e.link_faces) == 1]
+            if boundary:
+                filled = bmesh.ops.holes_fill(bm, edges=boundary, sides=0)
+                out["holes_filled"] = sum(
+                    1
+                    for g in filled.get("geom", [])
+                    if isinstance(g, bmesh.types.BMFace)
+                )
+        out["remaining_holes"] = sum(
+            1 for e in bm.edges if len(e.link_faces) == 1
+        )
+
+        # 4. the normals
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+        bm.to_mesh(mesh)
+    except Exception as exc:  # noqa: BLE001 - a broken source must not kill the bake
+        # Swallowing this silently hid a real bug once: the working copy was
+        # not repaired and the retopology reported "nothing to repair".
+        out["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        bm.free()
+    mesh.update()
+    return out
+
+
+def _parts(mesh) -> List[Dict]:
+    """The connected parts of a mesh, the biggest first.
+
+    A healthy model is one surface - one part. A scan or an AI-generated
+    model that fell apart has dozens, and remeshing glues them together:
+    that is where the smeared polygons come from. The report tells the user
+    before the retopology, not after.
+    """
+    parts: List[Dict] = []
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        visited = set()
+        for face in bm.faces:
+            if face.index in visited:
+                continue
+            stack = [face]
+            visited.add(face.index)
+            faces = 0
+            area = 0.0
+            while stack:
+                current = stack.pop()
+                faces += 1
+                area += current.calc_area()
+                for edge in current.edges:
+                    for other in edge.link_faces:
+                        if other.index not in visited:
+                            visited.add(other.index)
+                            stack.append(other)
+            parts.append({"faces": faces, "area": area})
+    except Exception:  # noqa: BLE001 - an odd mesh must not kill the tool
+        return []
+    finally:
+        bm.free()
+    parts.sort(key=lambda part: part["faces"], reverse=True)
+    return parts
+
+
+def repair(obj, weld: float = 0.0001, fill_holes: bool = False) -> Dict:
+    """Fix the mesh of an object: weld the duplicates, drop the degenerates,
+    make the normals consistent.
+
+    This is the step that has to come **before** a retopology. A model that
+    fell apart into dozens of pieces and thousands of coincident vertices
+    remeshes into a smeared shell; after the repair the same retopology
+    gives a clean quad mesh.
+
+    The holes are reported but not filled by default: filling them changes
+    the surface (measured: the area grew from 1.01 to 1.64 m2 on a head),
+    and the user decides.
+    """
+    report: Dict = {
+        "object": getattr(obj, "name", ""),
+        "ok": False,
+        "welded": 0,
+        "zero_faces": 0,
+        "loose_verts": 0,
+        "holes": 0,
+        "holes_filled": 0,
+        "notes": [],
+    }
+    mesh = getattr(obj, "data", None)
+    if mesh is None or not hasattr(mesh, "polygons"):
+        report["error"] = "the object has no mesh"
+        return report
+    if bpy.context.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    before = analyze(obj)
+    before_parts = _parts(mesh)
+    report["before"] = {
+        "verts": before.verts,
+        "faces": before.faces,
+        "doubles": before.doubles,
+        "holes": before.boundary,
+        "parts": len(before_parts),
+    }
+
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        bm.verts.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+
+        # 1. the faces that have no area
+        degenerate = [f for f in bm.faces if f.calc_area() < 1e-12]
+        report["zero_faces"] = len(degenerate)
+        if degenerate:
+            bmesh.ops.delete(bm, geom=degenerate, context="FACES")
+
+        # 2. the vertices in the same place. This comes **before** the loose
+        #    vertices: a doubled vertex has no faces of its own, and the
+        #    loose sweep would throw it away before the weld sees it.
+        verts_before = len(bm.verts)
+        if weld > 0:
+            bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=float(weld))
+        report["welded"] = verts_before - len(bm.verts)
+
+        # 3. the vertices that belong to nothing
+        loose = [v for v in bm.verts if not v.link_edges]
+        report["loose_verts"] = len(loose)
+        if loose:
+            bmesh.ops.delete(bm, geom=loose, context="VERTS")
+
+        # 4. the holes, only when the user asked for it
+        boundary = [e for e in bm.edges if len(e.link_faces) == 1]
+        report["holes"] = len(boundary)
+        if fill_holes and boundary:
+            filled = bmesh.ops.holes_fill(bm, edges=boundary, sides=0)
+            report["holes_filled"] = sum(
+                1
+                for g in filled.get("geom", [])
+                if isinstance(g, bmesh.types.BMFace)
+            )
+        else:
+            report["notes"].append(
+                f"{report['holes']} hole edge(s) left open - closing them "
+                f"changes the surface, so it is your call"
+            )
+
+        # 5. the normals
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+        bm.to_mesh(mesh)
+        report["ok"] = True
+    except Exception as exc:  # noqa: BLE001 - a bad mesh must not kill Blender
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        bm.free()
+    mesh.update()
+
+    after = analyze(obj)
+    after_parts = _parts(mesh)
+    report["after"] = {
+        "verts": after.verts,
+        "faces": after.faces,
+        "doubles": after.doubles,
+        "holes": after.boundary,
+        "parts": len(after_parts),
+    }
+    report["area_before"] = before.area
+    report["area_after"] = after.area
+    return report
 
 
 def _triangle_count(mesh) -> int:
@@ -416,19 +687,29 @@ def _cleanup(mesh, angle: float = 40.0) -> None:
 
 
 def deviation(obj, target, limit: int = 20000) -> Dict:
-    """How far the vertices of *obj* are from the surface of *target*."""
+    """How far the vertices of *obj* are from the surface of *target*.
+
+    Both objects are measured in the same space: the vertices of *obj* are
+    put into the world and the target is measured in world coordinates too.
+    A model with a scale of 26 would otherwise report millimetres where
+    there are metres.
+    """
     total = 0.0
     worst = 0.0
     count = 0
     vertices = obj.data.vertices
     step = max(1, len(vertices) // max(1, limit))
+    matrix = obj.matrix_world
+    target_matrix = target.matrix_world
     for index, vert in enumerate(vertices):
         if index % step:
             continue
-        hit, location, _normal, _face = target.closest_point_on_mesh(vert.co)
+        # The target's mesh lives in its own local space.
+        local = target_matrix.inverted() @ (matrix @ vert.co)
+        hit, location, _normal, _face = target.closest_point_on_mesh(local)
         if not hit:
             continue
-        distance = (vert.co - location).length
+        distance = (matrix @ vert.co - (target_matrix @ location)).length
         total += distance
         worst = max(worst, distance)
         count += 1
@@ -442,11 +723,17 @@ def retopo(
     budget: int = DEFAULT_BUDGET,
     shrinkwrap: bool = True,
     name: Optional[str] = None,
+    exact: bool = False,
 ) -> Dict:
     """Make a game mesh from a high-poly one and return a report.
 
     The original is never touched: the result is a **new object** next to it,
     so the sculpt stays available as the shrinkwrap target and as a fallback.
+
+    ``exact`` picks the remesher: the octree (Blocks) follows the shape
+    better but only doubles the resolution, so the budget lands on a step.
+    The voxel mode is continuous and hits the budget, but its topology is
+    grid-aligned - see :func:`_pick_voxel`.
     """
     report: Dict = {
         "ok": False,
@@ -469,9 +756,61 @@ def retopo(
     source = analyze(obj)
     report["source_faces"] = source.faces
     report["source_quads"] = source.quads
+    report["area_source"] = source.area
+    report["holes_source"] = source.boundary
+    report["doubles_source"] = source.doubles
 
     started = time.time()
     source_mesh = obj.data.copy()
+    # The working copy is repaired first: a shell with holes remeshes into
+    # nonsense, and the shrinkwrap then smears the polygons.
+    repair = _repair_mesh(source_mesh)
+    report["repair"] = repair
+    if repair.get("error"):
+        report["notes"].append(
+            f"the working copy could not be repaired ({repair['error']})"
+        )
+    if repair["holes"]:
+        report["notes"].append(
+            f"the source had {repair['holes']} hole edge(s); "
+            f"{repair['holes_filled']} hole(s) closed in the working copy"
+        )
+    if repair["doubles"]:
+        report["notes"].append(
+            f"{repair['doubles']} doubled vertices welded in the working copy"
+        )
+
+    # A model that fell apart is the usual reason for smeared polygons: the
+    # remesh glues the pieces together and the shrinkwrap pulls them onto one
+    # surface. Say it before the result, not after.
+    parts = _parts(obj.data)
+    report["parts"] = len(parts)
+    if len(parts) > 5:
+        share = 0.0
+        if parts and parts[0].get("area"):
+            share = parts[0]["area"] / sum(p["area"] for p in parts) * 100
+        report["notes"].append(
+            f"the source is {len(parts)} separate pieces (the biggest is "
+            f"{share:.0f}% of the surface) - repair the mesh first, or the "
+            f"pieces will be glued together and the polygons will smear"
+        )
+    if source.boundary > 50:
+        report["notes"].append(
+            f"the source has {source.boundary} open edge(s); the shrinkwrap "
+            f"projects onto an open surface and can smear the polygons"
+        )
+
+    # The repaired copy is also the target the new mesh is pulled onto.
+    # It must keep the transform of the source: a model that was imported
+    # with a scale of 26 and a location of 300 metres lives in its own
+    # coordinates, and a target at the origin is a surface somewhere else.
+    # It must also stay in the depsgraph while the shrinkwrap runs: a
+    # hidden target has no evaluated mesh and the modifier fails.
+    target = bpy.data.objects.new(f"{obj.name}_RetopoTarget", source_mesh)
+    bpy.context.scene.collection.objects.link(target)
+    target.matrix_world = obj.matrix_world.copy()
+    target.hide_render = True
+
     work = obj.copy()
     work.data = source_mesh.copy()
     work.name = name or f"{obj.name}_Retopo"
@@ -484,55 +823,81 @@ def retopo(
         work.data.materials.append(material)
 
     try:
-        # Find the depth whose triangle count is closest to the budget without
-        # going over it. Each attempt is a remesh, so the count is measured,
-        # not guessed from a table. The budget is in triangles, because that
-        # is what the renderer counts: a quad is two of them.
-        limit = _max_octree_depth()
-        counts = {}
-        for depth in range(1, limit + 1):
-            _apply_remesh(work, source_mesh, depth)
-            counts[depth] = _triangle_count(work.data)
-            if counts[depth] >= budget:
-                break
-        under = [d for d in counts if counts[d] <= budget]
-        if under:
-            chosen = max(under, key=lambda d: counts[d])
+        if exact:
+            # The voxel size is continuous, so the budget is a real knob.
+            # The cost is the topology: the quads follow the voxel grid.
+            diagonal = max(
+                (obj.matrix_world @ Vector(corner)).length
+                for corner in obj.bound_box
+            ) or 1.0
+            voxel, count = _pick_voxel(work, source_mesh, budget, diagonal)
+            _apply_voxel(work, source_mesh, voxel)
+            report["mode"] = "voxel"
+            report["voxel"] = round(voxel, 5)
+            report["depth"] = 0
+            report["notes"].append(
+                f"voxel mode: {voxel * 1000:.1f} mm cells, {count} triangles "
+                f"(the grid follows the shape, not the form)"
+            )
         else:
-            chosen = min(counts, key=lambda d: counts[d])
-            report["notes"].append(
-                f"even the simplest remesh has {counts[chosen]} triangles, "
-                f"over the budget of {budget}"
-            )
-        if chosen == limit and counts[chosen] < budget:
-            report["notes"].append(
-                f"the finest remesh has {counts[chosen]} triangles, "
-                f"under the budget of {budget}"
-            )
-        elif counts[chosen] < budget:
-            over = sorted(d for d in counts if counts[d] > budget)
-            if over:
+            # Find the depth whose triangle count is closest to the budget
+            # without going over it. Each attempt is a remesh, so the count is
+            # measured, not guessed from a table. The budget is in triangles,
+            # because that is what the renderer counts: a quad is two of them.
+            limit = _max_octree_depth()
+            counts = {}
+            for depth in range(1, limit + 1):
+                _apply_remesh(work, source_mesh, depth)
+                counts[depth] = _triangle_count(work.data)
+                if counts[depth] >= budget:
+                    break
+            under = [d for d in counts if counts[d] <= budget]
+            if under:
+                chosen = max(under, key=lambda d: counts[d])
+            else:
+                chosen = min(counts, key=lambda d: counts[d])
                 report["notes"].append(
-                    f"the remesh only doubles the resolution: the next step "
-                    f"would be {counts[over[0]]} triangles, over the budget of "
-                    f"{budget}"
+                    f"even the simplest remesh has {counts[chosen]} triangles, "
+                    f"over the budget of {budget}"
                 )
+            if chosen == limit and counts[chosen] < budget:
+                report["notes"].append(
+                    f"the finest remesh has {counts[chosen]} triangles, "
+                    f"under the budget of {budget}"
+                )
+            elif counts[chosen] < budget:
+                over = sorted(d for d in counts if counts[d] > budget)
+                if over:
+                    report["notes"].append(
+                        f"the remesh only doubles the resolution: the next step "
+                        f"would be {counts[over[0]]} triangles, over the budget of "
+                        f"{budget}"
+                    )
 
-        _apply_remesh(work, source_mesh, chosen)
-        report["depth"] = chosen
+            _apply_remesh(work, source_mesh, chosen)
+            report["mode"] = "blocks"
+            report["depth"] = chosen
         report["faces"] = len(work.data.polygons)
         report["tris"] = _triangle_count(work.data)
 
-        if shrinkwrap:
-            _apply_shrinkwrap(work, obj)
+        if shrinkwrap and repair["remaining_holes"]:
+            # An open surface has no inside: projecting onto it folds the
+            # mesh onto itself. Better to skip and to say so.
+            report["notes"].append(
+                f"the shrinkwrap was skipped: {repair['remaining_holes']} "
+                f"hole edge(s) are still open, and projecting onto an open "
+                f"shell smears the polygons"
+            )
+        elif shrinkwrap:
+            _apply_shrinkwrap(work, target)
         else:
             report["notes"].append("the surface was not pulled back onto the sculpt")
 
         _cleanup(work.data)
         # The distance is measured on the finished mesh, not on the raw
         # remesh: the report must describe what the user gets.
-        if shrinkwrap:
-            report["deviation"] = deviation(work, obj)
+        if shrinkwrap and not repair["remaining_holes"]:
+            report["deviation"] = deviation(work, target)
         result = analyze(work)
         report["object"] = work.name
         report["quads"] = result.quads
@@ -542,12 +907,28 @@ def retopo(
         report["verts"] = result.verts
         report["non_manifold"] = result.non_manifold
         report["doubles"] = result.doubles
+        report["area_result"] = result.area
+        report["zero_faces"] = result.zero_faces
+        if source.area > 0:
+            report["area_ratio"] = result.area / source.area
+            if report["area_ratio"] > 3.0:
+                report["notes"].append(
+                    f"the surface became {report['area_ratio']:.1f} times "
+                    f"bigger - the mesh is probably smearing; try a bigger "
+                    f"budget or turn the shrinkwrap off"
+                )
         report["seconds"] = time.time() - started
         report["ok"] = True
     except Exception as exc:  # noqa: BLE001 - a failed retopo must not kill Blender
         report["error"] = f"{type(exc).__name__}: {exc}"
         try:
             bpy.data.objects.remove(work, do_unlink=True)
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        # The target was only a scaffold for the shrinkwrap.
+        try:
+            bpy.data.objects.remove(target, do_unlink=True)
         except Exception:  # noqa: BLE001
             pass
     return report
@@ -614,12 +995,15 @@ def settings_from_scene(scene=None) -> Dict:
         "budget": int(getattr(scene, "gaa_retopo_budget", DEFAULT_BUDGET)),
         "shrinkwrap": bool(getattr(scene, "gaa_retopo_shrinkwrap", True)),
         "levels": int(getattr(scene, "gaa_lod_levels", 3)),
+        "weld": float(getattr(scene, "gaa_mesh_weld", 0.0001)),
+        "fill_holes": bool(getattr(scene, "gaa_mesh_fill_holes", False)),
+        "exact": bool(getattr(scene, "gaa_retopo_exact", False)),
     }
 
 
 def register() -> None:
     """Register the per-scene retopology settings."""
-    from bpy.props import BoolProperty, IntProperty
+    from bpy.props import BoolProperty, FloatProperty, IntProperty
 
     bpy.types.Scene.gaa_retopo_budget = IntProperty(
         name="Бюджет полигонов / Polygon budget",
@@ -649,10 +1033,48 @@ def register() -> None:
         min=1,
         max=8,
     )
+    bpy.types.Scene.gaa_mesh_weld = FloatProperty(
+        name="Порог сварки / Weld distance",
+        description=(
+            "На каком расстоянии вершины считаются одной / At what distance "
+            "two vertices count as one"
+        ),
+        default=0.0001,
+        min=0.0,
+        max=1.0,
+        precision=4,
+        subtype="DISTANCE",
+    )
+    bpy.types.Scene.gaa_mesh_fill_holes = BoolProperty(
+        name="Закрывать дыры / Fill holes",
+        description=(
+            "Залить открытые дыры в сетке (меняет поверхность) / Fill the open "
+            "holes in the mesh (this changes the surface)"
+        ),
+        default=False,
+    )
+    bpy.types.Scene.gaa_retopo_exact = BoolProperty(
+        name="Точно по бюджету / Exact budget",
+        description=(
+            "Подбирать воксель под заданный бюджет: попадание точное, но "
+            "топология идёт по сетке, а не по форме. Выключено — октаэдра: "
+            "форма лучше, бюджет попадает только на ступеньки / Search the "
+            "voxel size for the budget: exact, but the topology follows the "
+            "grid. Off - octree: better shape, the budget lands on a step"
+        ),
+        default=False,
+    )
 
 
 def unregister() -> None:
-    for name in ("gaa_lod_levels", "gaa_retopo_shrinkwrap", "gaa_retopo_budget"):
+    for name in (
+        "gaa_retopo_exact",
+        "gaa_mesh_fill_holes",
+        "gaa_mesh_weld",
+        "gaa_lod_levels",
+        "gaa_retopo_shrinkwrap",
+        "gaa_retopo_budget",
+    ):
         try:
             delattr(bpy.types.Scene, name)
         except Exception:  # noqa: BLE001
@@ -706,9 +1128,11 @@ def check_tool(object=None, budget=None, **kwargs) -> str:
     "polygon budget, pull the result back onto the sculpt to keep the "
     "silhouette, and clean it up. The original is left untouched; the result "
     "is a new object next to it.",
-    params=("object", "budget", "shrinkwrap"),
+    params=("object", "budget", "shrinkwrap", "exact"),
 )
-def retopo_tool(object=None, budget=None, shrinkwrap=None, **kwargs) -> str:
+def retopo_tool(
+    object=None, budget=None, shrinkwrap=None, exact=None, **kwargs
+) -> str:
     """Tool entry point: make a game mesh."""
     obj = None
     if object:
@@ -723,15 +1147,21 @@ def retopo_tool(object=None, budget=None, shrinkwrap=None, **kwargs) -> str:
     settings = settings_from_scene()
     limit = int(budget) if budget else settings["budget"]
     pull = settings["shrinkwrap"] if shrinkwrap is None else bool(shrinkwrap)
-    report = retopo(obj, limit, pull)
+    precise = settings["exact"] if exact is None else bool(exact)
+    report = retopo(obj, limit, pull, exact=precise)
     if not report.get("ok"):
         return f"The retopology did not finish: {report.get('error', 'unknown')}"
 
+    mode = report.get("mode", "blocks")
+    detail = (
+        f"voxel {report.get('voxel', 0) * 1000:.1f} mm"
+        if mode == "voxel"
+        else f"remesh depth {report.get('depth', 0)}"
+    )
     lines = [
         f"Made '{report['object']}' from '{report['source']}' in "
         f"{report['seconds']:.1f}s: {report['quads']} quads "
-        f"({report['tris']} triangles, remesh depth {report['depth']}, "
-        f"budget {limit})."
+        f"({report['tris']} triangles, {detail}, budget {limit})."
     ]
     error = report.get("deviation") or {}
     if error.get("samples"):
@@ -744,9 +1174,66 @@ def retopo_tool(object=None, budget=None, shrinkwrap=None, **kwargs) -> str:
             f"It has {report['non_manifold']} non-manifold edges - the remesh "
             f"leaves them, check the mesh before exporting."
         )
+    ratio = report.get("area_ratio")
+    if ratio:
+        lines.append(
+            f"The surface area went from {report.get('area_source', 0):.2f} to "
+            f"{report.get('area_result', 0):.2f} m2 (x{ratio:.1f})."
+        )
     for note in report.get("notes", []):
         lines.append(f"- {note}")
     lines.append("The original is untouched; unwrap the new mesh next.")
+    return "\n".join(lines)
+
+
+@tools.tool(
+    "mesh.repair",
+    "Repair the mesh",
+    "Fix the mesh of the active object: weld the vertices that sit in the "
+    "same place, drop the faces with no area and the loose vertices, and make "
+    "the normals consistent. Do this before a retopology: a model that fell "
+    "apart into pieces remeshes into a smeared shell.",
+    params=("object", "weld", "fill_holes"),
+)
+def repair_tool(object=None, weld=None, fill_holes=None, **kwargs) -> str:
+    """Tool entry point: repair the mesh."""
+    obj = None
+    if object:
+        obj = bpy.data.objects.get(str(object))
+    if obj is None:
+        obj = getattr(bpy.context, "active_object", None)
+    if obj is None:
+        return "There is no active object to repair."
+    if obj.type != "MESH":
+        return f"'{obj.name}' is not a mesh."
+
+    settings = settings_from_scene()
+    distance = float(weld) if weld is not None else settings["weld"]
+    holes = bool(fill_holes) if fill_holes is not None else settings["fill_holes"]
+    report = repair(obj, distance, holes)
+    if not report.get("ok"):
+        return f"The repair did not finish: {report.get('error', 'unknown')}"
+
+    before = report["before"]
+    after = report["after"]
+    lines = [
+        f"Repaired '{report['object']}': "
+        f"{before['verts']} -> {after['verts']} verts, "
+        f"{before['faces']} -> {after['faces']} faces."
+    ]
+    lines.append(
+        f"- welded {report['welded']} doubled vertices, "
+        f"removed {report['zero_faces']} empty faces and "
+        f"{report['loose_verts']} loose vertices"
+    )
+    lines.append(
+        f"- parts: {before['parts']} -> {after['parts']}, "
+        f"open edges: {before['holes']} -> {after['holes']}"
+    )
+    if report.get("holes_filled"):
+        lines.append(f"- closed {report['holes_filled']} hole(s)")
+    for note in report.get("notes", []):
+        lines.append(f"- {note}")
     return "\n".join(lines)
 
 

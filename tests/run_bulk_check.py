@@ -193,6 +193,29 @@ def part_cleanup(objects, materials_module):
     check(bpy.data.materials.get("OrphanMat") is None, "it is really gone")
 
 
+def part_cleanup_operator(objects):
+    print("\n== the cleanup button")
+    check(hasattr(bpy.ops.gaa, "cleanup_orphans"), "gaa.cleanup_orphans is registered")
+    # The button has a preview: it names what it would remove.
+    bpy.data.materials.new("PreviewOrphan")
+    preview = objects._preview_orphans()
+    check(
+        "PreviewOrphan" in preview,
+        f"the preview names the orphan ({preview})",
+    )
+    # And the operator really removes it (the dialog is skipped in a headless
+    # run: invoke() opens a window, execute() does the work).
+    result = bpy.ops.gaa.cleanup_orphans()
+    check(result == {"FINISHED"}, f"the button works ({result})")
+    check(
+        bpy.data.materials.get("PreviewOrphan") is None,
+        "the orphan is gone after the button",
+    )
+    # With nothing to delete it says so instead of pretending.
+    result = bpy.ops.gaa.cleanup_orphans()
+    check(result == {"CANCELLED"}, f"nothing to delete is reported ({result})")
+
+
 def part_tools(tools):
     print("\n== the tools")
     for name in (
@@ -238,6 +261,7 @@ def main():
         part_instance(objects)
         part_variant(objects, materials_module, new)
         part_cleanup(objects, materials_module)
+        part_cleanup_operator(objects)
         part_tools(tools)
     finally:
         package.unregister()

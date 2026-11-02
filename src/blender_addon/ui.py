@@ -113,10 +113,12 @@ def _draw_textures_tab(layout, context):
     row.operator("gaa.pbr_from_folder", icon="FILE_FOLDER")
     row.operator("gaa.apply_textures_from_folder", icon="IMPORT")
     # The material doctor: find what is wrong with the materials of the
-    # scene. The second button applies the repairs it can make on its own.
+    # scene. The second button applies the repairs it can make on its own,
+    # the third removes what nothing uses - and names it before deleting.
     row = box.row(align=True)
     row.operator("gaa.material_doctor", icon="CHECKMARK")
     row.operator("gaa.material_fix", icon="FILE_REFRESH")
+    row.operator("gaa.cleanup_orphans", icon="TRASH")
     # Make the project travel with its textures, and keep the paths portable.
     row = box.row(align=True)
     row.operator("gaa.pack_textures", icon="PACKAGE")
@@ -151,6 +153,7 @@ def _draw_mesh_tab(layout, context):
     box.label(text=i18n.T("mesh.title"), icon="MESH_CUBE")
     row = box.row(align=True)
     row.operator("gaa.mesh_check", icon="CHECKMARK")
+    row.operator("gaa.mesh_repair", icon="FILE_REFRESH")
     row.operator("gaa.mesh_retopo", icon="MOD_REMESH")
     row.operator("gaa.mesh_lod", icon="MOD_DECIM")
     # The budget is a number, not a preset: the user knows the target.
@@ -165,6 +168,17 @@ def _draw_mesh_tab(layout, context):
             "gaa_retopo_shrinkwrap",
             text=i18n.T("mesh.shrinkwrap"),
         )
+        box.prop(
+            scene,
+            "gaa_retopo_exact",
+            text=i18n.T("mesh.exact"),
+        )
+        # The repair: how close two vertices have to be to count as one, and
+        # whether to close the holes (it changes the surface, so it is off).
+        repair = box.row(align=True)
+        repair.scale_y = 0.85
+        repair.prop(scene, "gaa_mesh_weld", text=i18n.T("mesh.weld"))
+        box.prop(scene, "gaa_mesh_fill_holes", text=i18n.T("mesh.fill_holes"))
 
 
 def _draw_uv_tab(layout, context):

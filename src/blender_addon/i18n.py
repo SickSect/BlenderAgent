@@ -107,11 +107,22 @@ STRINGS = {
         ),
         "op.build_atlas.label": "Атлас",
         "op.build_atlas.desc": "Собрать общий атлас из островов выделенных объектов",
+        "op.cleanup_orphans.label": "Удалить неиспользуемое",
+        "op.cleanup_orphans.desc": (
+            "Удалить материалы и картинки, на которые не ссылается ни один "
+            "объект. Перед удалением показывает, что именно исчезнет"
+        ),
         "op.mesh_check.label": "Проверить сетку",
         "op.mesh_check.desc": (
             "Показать, что не так с сеткой: треугольники вместо квадов, дыры, "
             "не-манifold рёбра, полюса, вытянутые треугольники и отклонение "
             "от бюджета"
+        ),
+        "op.mesh_repair.label": "Починить сетку",
+        "op.mesh_repair.desc": (
+            "Слить совпадающие вершины, убрать пустые грани и висящие вершины, "
+            "пересчитать нормали. Сделай это перед реторопологией: модель, "
+            "распавшаяся на куски, после ремеша даёт смазанные полигоны"
         ),
         "op.mesh_retopo.label": "Ретопология",
         "op.mesh_retopo.desc": (
@@ -434,12 +445,36 @@ STRINGS = {
         "tab.uv": "UV",
         "tab.bake": "Запечь",
         "tab.export": "Экспорт",
+        # -- cleanup of unused data (operators.py) ---------------------------
+        "cleanup.title": "Удалить неиспользуемое?",
+        "cleanup.confirm": "Будет удалено безвозвратно: {preview}",
+        "cleanup.confirm_button": "Удалить",
+        "cleanup.nothing": "Нечего удалять: все материалы и картинки используются",
+        "cleanup.done": "Удалено {n}: {names}",
+        "cleanup.failed": "Не удалось удалить: {exc}",
         # -- mesh (mesh.py) -------------------------------------------------
         "mesh.title": "Сетка",
         "export.title": "Экспорт в игру",
         "mesh.budget": "Бюджет треугольников",
         "mesh.shrinkwrap": "Прижать к скульпту",
+        "mesh.exact": "Точно по бюджету",
         "mesh.levels": "Уровней LOD",
+        "mesh.weld": "Порог сварки",
+        "mesh.fill_holes": "Закрывать дыры",
+        "mesh.repair_done": (
+            "«{name}» починена: {verts_before} → {verts_after} вершин, "
+            "{faces_before} → {faces_after} граней"
+        ),
+        "mesh.repair_done_short": "Сетка починена",
+        "mesh.repair_welded": (
+            "Слито {welded} совпадающих вершин, убрано {zero} пустых граней "
+            "и {loose} висящих вершин"
+        ),
+        "mesh.repair_parts": (
+            "Частей: {parts_before} → {parts_after}, открытых рёбер: "
+            "{holes_before} → {holes_after}"
+        ),
+        "mesh.repair_holes": "Закрыто дыр: {n}",
         "mesh.no_object": "Нет активного объекта",
         "mesh.not_mesh": "Объект «{name}» — не меш",
         "mesh.clean": "Проблем не найдено.",
@@ -450,12 +485,17 @@ STRINGS = {
         ),
         "mesh.retopo_done": (
             "Из «{source}» сделан «{name}»: {quads} квадов ({tris} треугольников, "
-            "глубина {depth}, бюджет {budget}), {seconds} с"
+            "{detail}, бюджет {budget}), {seconds} с"
         ),
+        "mesh.retopo_mode_blocks": "глубина {depth}",
+        "mesh.retopo_mode_voxel": "воксель {voxel} м",
         "mesh.retopo_done_short": "Ретопология готова",
         "mesh.retopo_non_manifold": (
             "В новой сетке {n} не-манifold рёбер — это наследие ремеша, "
             "проверьте сетку перед экспортом"
+        ),
+        "mesh.retopo_area": (
+            "Площадь поверхности: было {before} м², стало {after} м² (×{ratio})"
         ),
         "mesh.retopo_deviation": (
             "Отклонение от скульпта: в среднем {mean} мм, максимум {worst} мм"
@@ -520,6 +560,12 @@ STRINGS = {
             "продолжи ответ пользователю."
         ),
         "msg.tool_result": "[Инструмент {name}] отработал. Результат:\n{report}",
+        "msg.button_result": (
+            "[Пользователь нажал кнопку. Результат:\n{report}]"
+        ),
+        "msg.button_error": (
+            "[Пользователь нажал кнопку, она вернула ошибку:\n{report}]"
+        ),
         "msg.tool_repeat": (
             "Инструмент «{name}» уже выполнялся в этом запросе — повторный "
             "вызов остановлен, чтобы не создать дубликаты."
@@ -641,11 +687,23 @@ STRINGS = {
         ),
         "op.build_atlas.label": "Atlas",
         "op.build_atlas.desc": "Lay the islands of the selected objects into one shared atlas",
+        "op.cleanup_orphans.label": "Delete the unused",
+        "op.cleanup_orphans.desc": (
+            "Delete the materials and images that no object references. It "
+            "names what will disappear before anything is removed"
+        ),
         "op.mesh_check.label": "Check the mesh",
         "op.mesh_check.desc": (
             "Show what is wrong with the mesh: triangles instead of quads, holes, "
             "non-manifold edges, poles, needle triangles and how far the face "
             "count is from the budget"
+        ),
+        "op.mesh_repair.label": "Repair the mesh",
+        "op.mesh_repair.desc": (
+            "Weld the vertices that sit in the same place, drop the empty faces "
+            "and the loose vertices, and make the normals consistent. Do this "
+            "before a retopology: a model that fell into pieces remeshes into "
+            "a smeared shell"
         ),
         "op.mesh_retopo.label": "Retopology",
         "op.mesh_retopo.desc": (
@@ -970,12 +1028,36 @@ STRINGS = {
         "tab.uv": "UV",
         "tab.bake": "Bake",
         "tab.export": "Export",
+        # -- cleanup of unused data (operators.py) ---------------------------
+        "cleanup.title": "Delete the unused data?",
+        "cleanup.confirm": "This will be deleted for good: {preview}",
+        "cleanup.confirm_button": "Delete",
+        "cleanup.nothing": "Nothing to delete: every material and image is used",
+        "cleanup.done": "Removed {n}: {names}",
+        "cleanup.failed": "Could not delete: {exc}",
         # -- mesh (mesh.py) -------------------------------------------------
         "mesh.title": "Mesh",
         "export.title": "Export to a game",
         "mesh.budget": "Triangle budget",
         "mesh.shrinkwrap": "Shrinkwrap to the sculpt",
+        "mesh.exact": "Exact budget",
         "mesh.levels": "LOD levels",
+        "mesh.weld": "Weld distance",
+        "mesh.fill_holes": "Fill holes",
+        "mesh.repair_done": (
+            "\"{name}\" repaired: {verts_before} -> {verts_after} vertices, "
+            "{faces_before} -> {faces_after} faces"
+        ),
+        "mesh.repair_done_short": "The mesh was repaired",
+        "mesh.repair_welded": (
+            "Welded {welded} doubled vertices, removed {zero} empty faces and "
+            "{loose} loose vertices"
+        ),
+        "mesh.repair_parts": (
+            "Parts: {parts_before} -> {parts_after}, open edges: "
+            "{holes_before} -> {holes_after}"
+        ),
+        "mesh.repair_holes": "Holes closed: {n}",
         "mesh.no_object": "There is no active object",
         "mesh.not_mesh": "Object \"{name}\" is not a mesh",
         "mesh.clean": "No problems found.",
@@ -986,12 +1068,17 @@ STRINGS = {
         ),
         "mesh.retopo_done": (
             "Made \"{name}\" from \"{source}\": {quads} quads ({tris} triangles, "
-            "depth {depth}, budget {budget}), {seconds}s"
+            "{detail}, budget {budget}), {seconds}s"
         ),
+        "mesh.retopo_mode_blocks": "depth {depth}",
+        "mesh.retopo_mode_voxel": "voxel {voxel} m",
         "mesh.retopo_done_short": "The retopology is done",
         "mesh.retopo_non_manifold": (
             "The new mesh has {n} non-manifold edges - that is what the remesh "
             "leaves behind, check the mesh before exporting"
+        ),
+        "mesh.retopo_area": (
+            "The surface area went from {before} m2 to {after} m2 (x{ratio})"
         ),
         "mesh.retopo_deviation": (
             "Distance from the sculpt: {mean} mm on average, {worst} mm at worst"
@@ -1057,6 +1144,12 @@ STRINGS = {
             "the answer."
         ),
         "msg.tool_result": "[Tool {name}] has run. Result:\n{report}",
+        "msg.button_result": (
+            "[The user pressed a button. Result:\n{report}]"
+        ),
+        "msg.button_error": (
+            "[The user pressed a button and it returned an error:\n{report}]"
+        ),
         "msg.tool_repeat": (
             "The tool \"{name}\" already ran in this request - the repeat was "
             "stopped so nothing is created twice."

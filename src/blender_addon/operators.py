@@ -1204,7 +1204,7 @@ class GAA_OT_tool_confirm(bpy.types.Operator):
         result = chat.run_pending_tool()
         if result is None:
             return {"CANCELLED"}
-        state.add_display("result", result["report"])
+        state.add_display("result", result["report"], remember=False)
         self.report({"INFO"}, i18n.T("msg.tool_ran"))
         # The model continues with the result of the confirmed tool.
         chat._ask_again()
@@ -1224,7 +1224,7 @@ class GAA_OT_tool_cancel(bpy.types.Operator):
         result = chat.decline_pending_tool()
         if result is None:
             return {"CANCELLED"}
-        state.add_display("result", result["report"])
+        state.add_display("result", result["report"], remember=False)
         self.report({"INFO"}, i18n.T("msg.tool_declined_short"))
         # The model continues and tells the user what was not done.
         chat._ask_again()
@@ -1430,6 +1430,46 @@ class GAA_OT_fix_uv_overlap(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GAA_OT_cleanup_orphans(bpy.types.Operator):
+    """Удалить неиспользуемые материалы и картинки"""
+
+    bl_idname = "gaa.cleanup_orphans"
+    bl_label = "Удалить неиспользуемое"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def invoke(self, context, event):
+        # Deletion is irreversible, so the button asks first and names what
+        # is about to disappear.
+        preview = objects._preview_orphans()
+        if preview == "nothing would be removed":
+            self.report({"INFO"}, i18n.T("cleanup.nothing"))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_confirm(
+            self,
+            event,
+            title=i18n.T("cleanup.title"),
+            message=i18n.T("cleanup.confirm", preview=preview),
+            confirm_text=i18n.T("cleanup.confirm_button"),
+        )
+
+    def execute(self, context):
+        try:
+            removed = objects.cleanup_orphans()
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("cleanup.failed", exc=exc))
+            return {"CANCELLED"}
+        if not removed:
+            self.report({"INFO"}, i18n.T("cleanup.nothing"))
+            return {"CANCELLED"}
+        message = i18n.T(
+            "cleanup.done", n=len(removed), names=", ".join(removed[:10])
+        )
+        state.add_display("result", message)
+        self.report({"INFO"}, message)
+        state._redraw()
+        return {"FINISHED"}
+
+
 class GAA_OT_mesh_check(bpy.types.Operator):
     """Проверить сетку активного объекта"""
 
@@ -1475,6 +1515,71 @@ class GAA_OT_mesh_check(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GAA_OT_mesh_repair(bpy.types.Operator):
+    """Починить сетку: слить совпадающие вершины и убрать мусор"""
+
+    bl_idname = "gaa.mesh_repair"
+    bl_label = "Починить сетку"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        if obj is None:
+            self.report({"WARNING"}, i18n.T("mesh.no_object"))
+            return {"CANCELLED"}
+        if obj.type != "MESH":
+            self.report({"WARNING"}, i18n.T("mesh.not_mesh", name=obj.name))
+            return {"CANCELLED"}
+        _show_tab(context, "MESH")
+        try:
+            settings = mesh.settings_from_scene(context.scene)
+            report = mesh.repair(
+                obj, settings["weld"], settings["fill_holes"]
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not report.get("ok"):
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=report.get("error")))
+            return {"CANCELLED"}
+
+        before = report["before"]
+        after = report["after"]
+        lines = [
+            i18n.T(
+                "mesh.repair_done",
+                name=report["object"],
+                verts_before=before["verts"],
+                verts_after=after["verts"],
+                faces_before=before["faces"],
+                faces_after=after["faces"],
+            ),
+            i18n.T(
+                "mesh.repair_welded",
+                welded=report["welded"],
+                zero=report["zero_faces"],
+                loose=report["loose_verts"],
+            ),
+            i18n.T(
+                "mesh.repair_parts",
+                parts_before=before["parts"],
+                parts_after=after["parts"],
+                holes_before=before["holes"],
+                holes_after=after["holes"],
+            ),
+        ]
+        if report.get("holes_filled"):
+            lines.append(i18n.T("mesh.repair_holes", n=report["holes_filled"]))
+        for note in report.get("notes", []):
+            lines.append(f"- {note}")
+
+        state.add_display("result", "\n".join(lines))
+        self.report({"INFO"}, i18n.T("mesh.repair_done_short"))
+        state._redraw()
+        return {"FINISHED"}
+
+
 class GAA_OT_mesh_retopo(bpy.types.Operator):
     """Сделать игровую сетку по бюджету треугольников"""
 
@@ -1493,7 +1598,12 @@ class GAA_OT_mesh_retopo(bpy.types.Operator):
         _show_tab(context, "MESH")
         try:
             settings = mesh.settings_from_scene(context.scene)
-            report = mesh.retopo(obj, settings["budget"], settings["shrinkwrap"])
+            report = mesh.retopo(
+                obj,
+                settings["budget"],
+                settings["shrinkwrap"],
+                exact=settings["exact"],
+            )
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, i18n.T("mesh.failed", exc=exc))
             return {"CANCELLED"}
@@ -1503,6 +1613,14 @@ class GAA_OT_mesh_retopo(bpy.types.Operator):
             state.add_display("error", i18n.T("mesh.failed", exc=report.get("error")))
             return {"CANCELLED"}
 
+        if report.get("mode") == "voxel":
+            detail = i18n.T(
+                "mesh.retopo_mode_voxel", voxel=report.get("voxel", 0)
+            )
+        else:
+            detail = i18n.T(
+                "mesh.retopo_mode_blocks", depth=report.get("depth", 0)
+            )
         lines = [
             i18n.T(
                 "mesh.retopo_done",
@@ -1510,7 +1628,7 @@ class GAA_OT_mesh_retopo(bpy.types.Operator):
                 source=report["source"],
                 quads=report["quads"],
                 tris=report["tris"],
-                depth=report["depth"],
+                detail=detail,
                 budget=report["budget"],
                 seconds=round(report["seconds"], 1),
             )
@@ -1527,6 +1645,16 @@ class GAA_OT_mesh_retopo(bpy.types.Operator):
         if report.get("non_manifold"):
             lines.append(
                 i18n.T("mesh.retopo_non_manifold", n=report["non_manifold"])
+            )
+        ratio = report.get("area_ratio")
+        if ratio:
+            lines.append(
+                i18n.T(
+                    "mesh.retopo_area",
+                    before=round(report.get("area_source", 0), 2),
+                    after=round(report.get("area_result", 0), 2),
+                    ratio=round(ratio, 1),
+                )
             )
         for note in report.get("notes", []):
             lines.append(f"- {note}")
@@ -2129,7 +2257,9 @@ _classes = (
     GAA_OT_node_set_normal,
     GAA_OT_procedural_build,
     GAA_OT_fix_uv_overlap,
+    GAA_OT_cleanup_orphans,
     GAA_OT_mesh_check,
+    GAA_OT_mesh_repair,
     GAA_OT_mesh_retopo,
     GAA_OT_mesh_lod,
     GAA_OT_set_tab,
@@ -2178,7 +2308,9 @@ _OPERATOR_KEYS = {
     "gaa.node_set_roughness": "op.node_set_roughness",
     "gaa.node_set_normal": "op.node_set_normal",
     "gaa.procedural_build": "op.procedural_build",
+    "gaa.cleanup_orphans": "op.cleanup_orphans",
     "gaa.mesh_check": "op.mesh_check",
+    "gaa.mesh_repair": "op.mesh_repair",
     "gaa.mesh_retopo": "op.mesh_retopo",
     "gaa.mesh_lod": "op.mesh_lod",
 }
