@@ -154,6 +154,8 @@ def _draw_mesh_tab(layout, context):
     row = box.row(align=True)
     row.operator("gaa.mesh_check", icon="CHECKMARK")
     row.operator("gaa.mesh_repair", icon="FILE_REFRESH")
+    row.operator("gaa.mesh_repair_non_manifold", icon="MOD_EDGESPLIT")
+    row = box.row(align=True)
     row.operator("gaa.mesh_retopo", icon="MOD_REMESH")
     row.operator("gaa.mesh_lod", icon="MOD_DECIM")
     # The budget is a number, not a preset: the user knows the target.
@@ -172,6 +174,11 @@ def _draw_mesh_tab(layout, context):
             scene,
             "gaa_retopo_exact",
             text=i18n.T("mesh.exact"),
+        )
+        box.prop(
+            scene,
+            "gaa_mesh_fix_non_manifold",
+            text=i18n.T("mesh.fix_non_manifold"),
         )
         # The repair: how close two vertices have to be to count as one, and
         # whether to close the holes (it changes the surface, so it is off).

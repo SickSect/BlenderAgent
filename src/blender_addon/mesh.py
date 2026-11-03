@@ -649,6 +649,340 @@ def repair(obj, weld: float = 0.0001, fill_holes: bool = False) -> Dict:
     return report
 
 
+# --- the non-manifold repair -----------------------------------------------
+
+
+def _bm_stats(bm) -> Dict:
+    """Measure a bmesh without changing it."""
+    non_manifold = boundary = wire = 0
+    area = 0.0
+    zero_faces = 0
+    for edge in bm.edges:
+        faces = len(edge.link_faces)
+        if faces > 2:
+            non_manifold += 1
+        elif faces == 1:
+            boundary += 1
+        elif faces == 0:
+            wire += 1
+    for face in bm.faces:
+        face_area = face.calc_area()
+        area += face_area
+        if face_area < 1e-12:
+            zero_faces += 1
+    return {
+        "verts": len(bm.verts),
+        "faces": len(bm.faces),
+        "edges": len(bm.edges),
+        "non_manifold": non_manifold,
+        "boundary": boundary,
+        "wire": wire,
+        "area": area,
+        "zero_faces": zero_faces,
+    }
+
+
+def _non_manifold_edges(bm) -> List:
+    return [edge for edge in bm.edges if len(edge.link_faces) > 2]
+
+
+def _drop_loose(bm) -> None:
+    """Remove edges and vertices that no face uses after a delete."""
+    edges = [edge for edge in bm.edges if not edge.link_faces]
+    if edges:
+        bmesh.ops.delete(bm, geom=edges, context="EDGES")
+    verts = [vert for vert in bm.verts if not vert.link_edges]
+    if verts:
+        bmesh.ops.delete(bm, geom=verts, context="VERTS")
+
+
+def repair_non_manifold(mesh, max_area_change: float = 0.05) -> Dict:
+    """Fix the edges that more than two faces share, without a global weld.
+
+    The remesh leaves branching edges behind. A global ``remove_doubles`` is
+    not the answer: measured on a real asset, it turned 165 non-manifold edges
+    into 4 154, because the surface touches itself in many places and merging
+    every coincident vertex folds it. This function is deliberately local and
+    measured:
+
+    1. drop the zero-area faces and the exactly duplicate faces;
+    2. delete the faces that sit entirely on branching edges - those are the
+       internal walls left between two glued surfaces;
+    3. weld only the vertices that belong to a non-manifold edge, with a tiny
+       tolerance;
+    4. split whatever is still branching. This turns a three-face edge into
+       open boundary edges instead of a branch;
+    5. after every step, measure non-manifold, boundary, faces and area. If the
+       step made the mesh worse, it is rolled back; the best state wins.
+
+    Split branches are allowed to become open edges: a watertight mesh is not
+    always possible without deleting geometry, so the report says how many
+    open edges appeared. The mesh datablock is only written when at least one
+    step was accepted.
+    """
+    report: Dict = {
+        "ok": False,
+        "changed": False,
+        "rolled_back": False,
+        "before": {},
+        "after": {},
+        "steps": [],
+        "zero_faces": 0,
+        "duplicate_faces": 0,
+        "internal_faces": 0,
+        "welded": 0,
+        "split": 0,
+        "notes": [],
+        "error": "",
+    }
+    bm = bmesh.new()
+    best = None
+    try:
+        bm.from_mesh(mesh)
+        if not len(bm.faces):
+            stats = _bm_stats(bm)
+            report["before"] = stats
+            report["after"] = stats
+            report["non_manifold_before"] = 0
+            report["non_manifold_after"] = 0
+            report["boundary_before"] = stats["boundary"]
+            report["boundary_after"] = stats["boundary"]
+            report["area_before"] = stats["area"]
+            report["area_after"] = stats["area"]
+            report["ok"] = True
+            report["notes"].append("the mesh has no faces")
+            return report
+
+        before = _bm_stats(bm)
+        report["before"] = before
+        if not before["non_manifold"]:
+            report["after"] = before
+            report["non_manifold_before"] = 0
+            report["non_manifold_after"] = 0
+            report["boundary_before"] = before["boundary"]
+            report["boundary_after"] = before["boundary"]
+            report["area_before"] = before["area"]
+            report["area_after"] = before["area"]
+            report["ok"] = True
+            report["notes"].append("no non-manifold edges")
+            return report
+
+        best = bm.copy()
+        current = before
+
+        def try_step(name, apply, accept):
+            nonlocal best, current
+            trial = best.copy()
+            fields = apply(trial)
+            if fields is None:
+                trial.free()
+                return False
+            stats = _bm_stats(trial)
+            if stats["faces"] > 0 and accept(stats):
+                best.free()
+                best = trial
+                record = {
+                    "name": name,
+                    "accepted": True,
+                    "before": current,
+                    "after": stats,
+                }
+                record.update(fields)
+                report["steps"].append(record)
+                current = stats
+                return True
+            trial.free()
+            report["steps"].append(
+                {
+                    "name": name,
+                    "accepted": False,
+                    "before": current,
+                    "after": stats,
+                }
+            )
+            report["rolled_back"] = True
+            return False
+
+        def remove_zero_faces(trial):
+            faces = [face for face in trial.faces if face.calc_area() < 1e-12]
+            if not faces:
+                return None
+            bmesh.ops.delete(trial, geom=faces, context="FACES")
+            _drop_loose(trial)
+            return {"zero_faces": len(faces)}
+
+        def accept_zero(stats):
+            area_ok = abs(stats["area"] - current["area"]) <= max(
+                1e-9, current["area"] * 1e-6
+            )
+            return (
+                area_ok
+                and stats["non_manifold"] <= current["non_manifold"]
+                and stats["boundary"] <= current["boundary"]
+            )
+
+        def remove_duplicate_faces(trial):
+            trial.verts.index_update()
+            seen = set()
+            duplicates = []
+            for face in trial.faces:
+                key = tuple(sorted(vert.index for vert in face.verts))
+                if key in seen:
+                    duplicates.append(face)
+                else:
+                    seen.add(key)
+            if not duplicates:
+                return None
+            bmesh.ops.delete(trial, geom=duplicates, context="FACES")
+            _drop_loose(trial)
+            return {"duplicate_faces": len(duplicates)}
+
+        def accept_duplicate(stats):
+            return (
+                stats["non_manifold"] <= current["non_manifold"]
+                and stats["boundary"] <= current["boundary"]
+            )
+
+        def remove_internal_faces(trial):
+            removed = 0
+            for _ in range(8):
+                internal = [
+                    face
+                    for face in trial.faces
+                    if len(face.edges) >= 3
+                    and all(len(edge.link_faces) > 2 for edge in face.edges)
+                ]
+                if not internal:
+                    break
+                bmesh.ops.delete(trial, geom=internal, context="FACES")
+                _drop_loose(trial)
+                removed += len(internal)
+            if not removed:
+                return None
+            return {"internal_faces": removed}
+
+        def accept_internal(stats):
+            # Removing a hidden wall lowers the area; that is expected. A face
+            # is only "internal" when every one of its edges is branching, so
+            # the deleted surface was not part of the outer skin.
+            return (
+                stats["non_manifold"] < current["non_manifold"]
+                and stats["boundary"] <= current["boundary"]
+                and stats["area"] >= current["area"] * 0.5
+            )
+
+        def weld_branch_verts(trial):
+            edges = _non_manifold_edges(trial)
+            if not edges:
+                return None
+            verts = list({vert for edge in edges for vert in edge.verts})
+            if not verts:
+                return None
+            before_verts = len(trial.verts)
+            distance = max(_bbox_diagonal(trial) * 1e-6, 1e-9)
+            bmesh.ops.remove_doubles(trial, verts=verts, dist=distance)
+            welded = before_verts - len(trial.verts)
+            if welded <= 0:
+                return None
+            return {"welded": welded, "weld_distance": distance}
+
+        def accept_weld(stats):
+            area_ok = abs(stats["area"] - current["area"]) <= max(
+                1e-9, current["area"] * max_area_change
+            )
+            return (
+                area_ok
+                and stats["non_manifold"] < current["non_manifold"]
+                and stats["boundary"] <= current["boundary"]
+            )
+
+        def split_branches(trial):
+            total = 0
+            for _ in range(3):
+                edges = _non_manifold_edges(trial)
+                if not edges:
+                    break
+                count = len(edges)
+                bmesh.ops.split_edges(trial, edges=edges)
+                total += count
+                if len(_non_manifold_edges(trial)) >= count:
+                    break
+            if not total:
+                return None
+            return {"split": total}
+
+        def accept_split(stats):
+            area_ok = abs(stats["area"] - current["area"]) <= max(
+                1e-9, current["area"] * 1e-3
+            )
+            return area_ok and stats["non_manifold"] < current["non_manifold"]
+
+        try_step("zero_faces", remove_zero_faces, accept_zero)
+        try_step("duplicate_faces", remove_duplicate_faces, accept_duplicate)
+        try_step("internal_faces", remove_internal_faces, accept_internal)
+        try_step("targeted_weld", weld_branch_verts, accept_weld)
+        try_step("split_edges", split_branches, accept_split)
+
+        report["after"] = current
+        report["changed"] = any(step["accepted"] for step in report["steps"])
+        report["non_manifold_before"] = before["non_manifold"]
+        report["non_manifold_after"] = current["non_manifold"]
+        report["boundary_before"] = before["boundary"]
+        report["boundary_after"] = current["boundary"]
+        report["area_before"] = before["area"]
+        report["area_after"] = current["area"]
+        for step in report["steps"]:
+            if not step["accepted"]:
+                continue
+            for key in (
+                "zero_faces",
+                "duplicate_faces",
+                "internal_faces",
+                "welded",
+                "split",
+            ):
+                report[key] += int(step.get(key, 0))
+
+        if report["changed"]:
+            bmesh.ops.recalc_face_normals(best, faces=best.faces[:])
+            best.to_mesh(mesh)
+            mesh.update()
+
+        if report["changed"]:
+            if not current["non_manifold"]:
+                report["notes"].append("non-manifold edges fixed")
+            else:
+                report["notes"].append(
+                    f"{current['non_manifold']} non-manifold edge(s) remain - "
+                    f"likely self-intersections or thin walls"
+                )
+            open_edges = current["boundary"] - before["boundary"]
+            if open_edges > 0:
+                report["notes"].append(
+                    f"{open_edges} new open edge(s) appeared - close them if the "
+                    f"mesh must be watertight"
+                )
+            if current["area"]:
+                change = abs(current["area"] - before["area"]) / current["area"]
+                if change > 0.01:
+                    report["notes"].append(
+                        f"the surface area changed from {before['area']:.2f} to "
+                        f"{current['area']:.2f} m2"
+                    )
+        else:
+            report["notes"].append(
+                "no safe repair found; the mesh was left unchanged"
+            )
+        report["ok"] = True
+    except Exception as exc:  # noqa: BLE001 - a bad mesh must not kill Blender
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        if best is not None:
+            best.free()
+        bm.free()
+    return report
+
+
 def _triangle_count(mesh) -> int:
     """How many triangles the renderer will see for this mesh."""
     total = 0
@@ -724,6 +1058,7 @@ def retopo(
     shrinkwrap: bool = True,
     name: Optional[str] = None,
     exact: bool = False,
+    fix_non_manifold: bool = True,
 ) -> Dict:
     """Make a game mesh from a high-poly one and return a report.
 
@@ -745,6 +1080,8 @@ def retopo(
         "quads": 0,
         "seconds": 0.0,
         "deviation": {},
+        "non_manifold_before": 0,
+        "non_manifold_fix": {},
         "notes": [],
     }
     if getattr(obj, "type", "") != "MESH":
@@ -893,6 +1230,19 @@ def retopo(
         else:
             report["notes"].append("the surface was not pulled back onto the sculpt")
 
+        # The remesh can leave branching edges. Repair them before the final
+        # cleanup, so the smoothing and the sharp edges see the final
+        # topology. The repair is measured and rolls itself back on a bad
+        # step; it never does a global weld.
+        if fix_non_manifold:
+            fix_report = repair_non_manifold(work.data)
+            report["non_manifold_before"] = (
+                fix_report.get("before", {}).get("non_manifold", 0)
+            )
+            report["non_manifold_fix"] = fix_report
+        else:
+            report["non_manifold_before"] = analyze(work).non_manifold
+
         _cleanup(work.data)
         # The distance is measured on the finished mesh, not on the raw
         # remesh: the report must describe what the user gets.
@@ -998,6 +1348,9 @@ def settings_from_scene(scene=None) -> Dict:
         "weld": float(getattr(scene, "gaa_mesh_weld", 0.0001)),
         "fill_holes": bool(getattr(scene, "gaa_mesh_fill_holes", False)),
         "exact": bool(getattr(scene, "gaa_retopo_exact", False)),
+        "fix_non_manifold": bool(
+            getattr(scene, "gaa_mesh_fix_non_manifold", True)
+        ),
     }
 
 
@@ -1064,10 +1417,23 @@ def register() -> None:
         ),
         default=False,
     )
+    bpy.types.Scene.gaa_mesh_fix_non_manifold = BoolProperty(
+        name="Чинить non-manifold / Repair non-manifold",
+        description=(
+            "После ремеша убрать внутренние и дублирующиеся грани, точечно "
+            "сварить вершины на развилках и разделить оставшиеся ветви. Шаг "
+            "откатывается, если делает сетку хуже / After the remesh, remove "
+            "internal and duplicate faces, weld only the vertices on branching "
+            "edges and split the rest. A step is rolled back if it makes the "
+            "mesh worse"
+        ),
+        default=True,
+    )
 
 
 def unregister() -> None:
     for name in (
+        "gaa_mesh_fix_non_manifold",
         "gaa_retopo_exact",
         "gaa_mesh_fill_holes",
         "gaa_mesh_weld",
@@ -1127,11 +1493,17 @@ def check_tool(object=None, budget=None, **kwargs) -> str:
     "Make a game mesh from the high-poly one: remesh to quads within the "
     "polygon budget, pull the result back onto the sculpt to keep the "
     "silhouette, and clean it up. The original is left untouched; the result "
-    "is a new object next to it.",
-    params=("object", "budget", "shrinkwrap", "exact"),
+    "is a new object next to it. By default it also repairs the non-manifold "
+    "edges the remesh leaves behind.",
+    params=("object", "budget", "shrinkwrap", "exact", "fix_non_manifold"),
 )
 def retopo_tool(
-    object=None, budget=None, shrinkwrap=None, exact=None, **kwargs
+    object=None,
+    budget=None,
+    shrinkwrap=None,
+    exact=None,
+    fix_non_manifold=None,
+    **kwargs,
 ) -> str:
     """Tool entry point: make a game mesh."""
     obj = None
@@ -1148,7 +1520,12 @@ def retopo_tool(
     limit = int(budget) if budget else settings["budget"]
     pull = settings["shrinkwrap"] if shrinkwrap is None else bool(shrinkwrap)
     precise = settings["exact"] if exact is None else bool(exact)
-    report = retopo(obj, limit, pull, exact=precise)
+    fix = (
+        settings["fix_non_manifold"]
+        if fix_non_manifold is None
+        else bool(fix_non_manifold)
+    )
+    report = retopo(obj, limit, pull, exact=precise, fix_non_manifold=fix)
     if not report.get("ok"):
         return f"The retopology did not finish: {report.get('error', 'unknown')}"
 
@@ -1169,7 +1546,32 @@ def retopo_tool(
             f"It sits {error['mean'] * 1000:.1f} mm from the sculpt on average "
             f"(worst {error['max'] * 1000:.1f} mm)."
         )
-    if report.get("non_manifold"):
+    fix_report = report.get("non_manifold_fix") or {}
+    if fix_report.get("error"):
+        lines.append(
+            f"The non-manifold repair did not finish: {fix_report['error']}"
+        )
+    elif fix_report.get("changed"):
+        lines.append(
+            f"Non-manifold edges: {report.get('non_manifold_before', 0)} -> "
+            f"{report.get('non_manifold', 0)} "
+            f"({fix_report.get('internal_faces', 0)} internal faces removed, "
+            f"{fix_report.get('split', 0)} branches split)."
+        )
+        if report.get("non_manifold"):
+            lines.append(
+                f"{report['non_manifold']} non-manifold edge(s) remain - likely "
+                f"self-intersections or thin walls."
+            )
+        opened = fix_report.get("boundary_after", 0) - fix_report.get(
+            "boundary_before", 0
+        )
+        if opened > 0:
+            lines.append(
+                f"{opened} open edge(s) appeared after splitting the branches - "
+                f"close them if the mesh must be watertight."
+            )
+    elif report.get("non_manifold"):
         lines.append(
             f"It has {report['non_manifold']} non-manifold edges - the remesh "
             f"leaves them, check the mesh before exporting."
@@ -1234,6 +1636,84 @@ def repair_tool(object=None, weld=None, fill_holes=None, **kwargs) -> str:
         lines.append(f"- closed {report['holes_filled']} hole(s)")
     for note in report.get("notes", []):
         lines.append(f"- {note}")
+    return "\n".join(lines)
+
+
+@tools.tool(
+    "mesh.repair_non_manifold",
+    "Repair non-manifold edges",
+    "Find the edges that more than two faces share and repair them without a "
+    "global weld: remove internal and duplicate faces, weld only the vertices "
+    "on those edges, and split whatever is still branching. Every step is "
+    "measured; a step that makes the mesh worse is rolled back. It is safe to "
+    "run twice.",
+    params=("object",),
+)
+def repair_non_manifold_tool(object=None, **kwargs) -> str:
+    """Tool entry point: repair the non-manifold edges."""
+    obj = None
+    if object:
+        obj = bpy.data.objects.get(str(object))
+    if obj is None:
+        obj = getattr(bpy.context, "active_object", None)
+    if obj is None:
+        return "There is no active object to repair."
+    if obj.type != "MESH":
+        return f"'{obj.name}' is not a mesh."
+
+    report = repair_non_manifold(obj.data)
+    if not report.get("ok"):
+        return (
+            f"The non-manifold repair did not finish: "
+            f"{report.get('error', 'unknown')}"
+        )
+
+    before = report["before"]
+    after = report["after"]
+    if not report.get("changed"):
+        if not before["non_manifold"]:
+            return f"'{obj.name}' has no non-manifold edges."
+        return (
+            f"'{obj.name}' was left unchanged: no safe non-manifold repair was "
+            f"found ({before['non_manifold']} edge(s) still branching)."
+        )
+
+    lines = [
+        f"Repaired non-manifold edges on '{obj.name}': "
+        f"{before['non_manifold']} -> {after['non_manifold']}."
+    ]
+    if not after["non_manifold"]:
+        lines.append("The mesh has no non-manifold edges now.")
+    else:
+        lines.append(
+            f"{after['non_manifold']} non-manifold edge(s) remain - likely "
+            f"self-intersections or thin walls."
+        )
+    if report.get("internal_faces"):
+        lines.append(f"- internal faces removed: {report['internal_faces']}")
+    if report.get("duplicate_faces"):
+        lines.append(f"- duplicate faces removed: {report['duplicate_faces']}")
+    if report.get("zero_faces"):
+        lines.append(f"- zero-area faces removed: {report['zero_faces']}")
+    if report.get("welded"):
+        lines.append(f"- vertices welded locally: {report['welded']}")
+    if report.get("split"):
+        lines.append(f"- branches split: {report['split']}")
+    opened = after["boundary"] - before["boundary"]
+    lines.append(
+        f"Open edges: {before['boundary']} -> {after['boundary']}"
+        + (f" ({opened} new)" if opened > 0 else "")
+    )
+    if opened > 0:
+        lines.append(
+            "Close the new open edges if the mesh must be watertight."
+        )
+    if before["area"]:
+        change = abs(after["area"] - before["area"]) / before["area"]
+        if change > 0.01:
+            lines.append(
+                f"Surface area: {before['area']:.2f} -> {after['area']:.2f} m2"
+            )
     return "\n".join(lines)
 
 

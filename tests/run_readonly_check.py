@@ -259,6 +259,7 @@ def main():
             )
         print("\n== the acting buttons leave no mess")
         acting_buttons = [
+            "gaa.mesh_repair_non_manifold",
             "gaa.unwrap_uv",
             "gaa.match_density",
             "gaa.build_atlas",

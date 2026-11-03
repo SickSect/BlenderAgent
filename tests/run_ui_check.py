@@ -171,6 +171,8 @@ def part_operator_props():
         "gaa_bake_naming",
         "gaa_retopo_budget",
         "gaa_retopo_shrinkwrap",
+        "gaa_retopo_exact",
+        "gaa_mesh_fix_non_manifold",
         "gaa_lod_levels",
         "gaa_tab",
     )

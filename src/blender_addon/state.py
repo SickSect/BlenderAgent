@@ -196,6 +196,29 @@ def _remember_display(role: str, body: str) -> None:
     )
 
 
+def remember_code_result(ok: bool, report: str = "") -> None:
+    """Put the outcome of "Run code" into the model-facing history.
+
+    The code is the model's own suggestion, so the next turn must know not
+    only that the button was pressed but *whether the script worked*. Without
+    that distinction "it ran" and "it crashed" look the same, and the model
+    keeps repeating the same broken line. The message is a user turn on
+    purpose: the chat template has no separate channel for an action result,
+    and every other button report already travels this way.
+    """
+    try:
+        chat = get_state()
+    except Exception:  # noqa: BLE001 - the history is optional
+        return
+    key = "msg.code_result_for_model" if ok else "msg.code_error_for_model"
+    text = i18n.T(key)
+    report = (report or "").strip()
+    if report:
+        label = i18n.T("msg.output" if ok else "msg.code_error")
+        text += "\n\n" + label + "\n" + report[:MAX_DISPLAY_CHARS]
+    chat.history.append({"role": "user", "content": text})
+
+
 def set_last_display(body: str) -> None:
     wm = _wm()
     if wm is None or not len(wm.gaa_messages):

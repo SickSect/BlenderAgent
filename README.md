@@ -69,7 +69,7 @@ Or build it yourself from the sources (only the standard library is needed):
 ```bash
 git clone <repo-url>
 cd BlenderAgent
-python tools/build_addon.py          # -> dist/asset_assistant-0.6.2.zip
+python tools/build_addon.py          # -> dist/asset_assistant-0.7.0.zip
 ```
 
 Every release is built from the tagged commit, so the zip on the releases page
@@ -183,6 +183,16 @@ Blender add-on  --commands.jsonl-->  sidecar worker  --HTTP-->  Ollama / API
 | `uv.symmetric` | Unwraps symmetrically: the far half gets the UVs of its counterpart, so one painting serves both sides |
 | `uv.export_kit` / `uv.import_atlas` | The round trip with Aseprite or Krita: the layout as a PNG plus a manifest (the atlas size, the gap, the density) and a copy of the current texture — paint it there, bring it back, and the UV coordinates are never touched, so the picture lands exactly where the layout said it would |
 
+### Mesh
+
+| Tool | What it does |
+|---|---|
+| `mesh.check` | The doctor for one mesh: triangles instead of quads, holes, non-manifold edges, doubled vertices, poles, spikes, missing UVs and the budget |
+| `mesh.repair` | Welds doubled vertices, removes empty faces and loose vertices, and closes holes only when asked |
+| `mesh.repair_non_manifold` | Repairs edges with more than two faces locally: internal and duplicate faces, a targeted weld of the branching vertices, then a split of what is still branching. Every step is measured and rolled back if it makes the mesh worse |
+| `mesh.retopo` | A game mesh under the triangle budget, pulled back onto the sculpt; the original is untouched. It repairs non-manifold edges by default |
+| `mesh.lod` | A `LOD1`, `LOD2`, `LOD3` chain next to the game mesh, each about half the previous one |
+
 ### Baking
 
 | Tool | What it does |
@@ -261,6 +271,7 @@ The add-on has its own harness: every check runs the **real** code on the
 blender --background --factory-startup --python tests/run_tools_check.py
 blender --background --factory-startup --python tests/run_skills_check.py
 blender --background --factory-startup --python tests/run_procedural_check.py
+blender --background --factory-startup --python tests/run_presets_check.py
 blender --background --factory-startup --python tests/run_baking_check.py
 blender --background --factory-startup --python tests/run_uv_check.py
 blender --background --factory-startup --python tests/run_doctor_check.py
@@ -270,7 +281,12 @@ blender --background --factory-startup --python tests/run_project_check.py
 blender --background --factory-startup --python tests/run_confirm_check.py
 blender --background --factory-startup --python tests/run_exchange_check.py
 blender --background --factory-startup --python tests/run_heightmap_check.py
+blender --background --factory-startup --python tests/run_export_check.py
+blender --background --factory-startup --python tests/run_uvmapping_check.py
+blender --background --factory-startup --python tests/run_mesh_check.py
+blender --background --factory-startup --python tests/run_non_manifold_check.py
 blender --background --factory-startup --python tests/run_snapshot_check.py
+blender --background --factory-startup --python tests/run_loop_check.py
 blender --background --factory-startup --python tests/run_ui_check.py
 blender --background --factory-startup --python tests/run_readonly_check.py
 ```
@@ -305,22 +321,23 @@ what to press.
 
 ## Roadmap
 
-**Done** — the materials-and-textures line: the focused scene snapshot, the
-doctor, the tool registry, skills, texture hygiene, bulk operations, the UV
-toolbox, the baking pipeline, the confirmation dialog, the project pipeline.
+**Done** — the full asset pipeline: the focused scene snapshot, the doctor,
+the tool registry, skills, texture hygiene, bulk operations, the UV toolbox,
+the baking pipeline, the confirmation dialog, the project pipeline, the export
+itself (GLB/FBX, with Mapping chains moved into UVs), the mesh doctor, repair,
+retopology and LOD, the local non-manifold repair (with a checkbox in the
+retopology and a rollback for a bad step), and the AI loop (the code result and
+the flat Base Color note reach the model).
 
-**Next — the export itself.** The add-on checks that the project is ready for
-glTF/FBX but does not export. One button ("export the selected objects with
-the settings a game needs") closes the loop from *a folder of textures* to *a
-file the engine opens*.
+**Next — transferring Mixamo animations to your own rig.** The plan, the three
+possible ways and the estimate live in
+[`docs/23-animation-roadmap.md`](docs/23-animation-roadmap.md); start with
+steps 1–2 (detect Mixamo + a mapping table with auto-guessing).
 
 **Then**
-- several tool calls per answer instead of one round trip each;
 - the assistant learns to drive other add-ons;
 - the procedural recipes grow (and the model picks them better);
-- **transferring Mixamo animations to your own rig** — the plan, the three
-  possible ways and the estimate live in
-  [`docs/23-animation-roadmap.md`](docs/23-animation-roadmap.md).
+- the UV deep integration (Substance, PSD layers per island).
 
 **Known rough edge:** on a small local model the assistant is not yet reliable
 at *choosing* a material recipe. The deterministic half of the add-on does not
@@ -340,7 +357,7 @@ git tag v0.5.10 && git push origin main v0.5.10
 ```
 
 Then *Releases → Draft a new release*, pick the tag `v0.5.10`, attach
-`dist/asset_assistant-0.6.2.zip`, paste the notes (`RELEASE_NOTES.md`) and
+`dist/asset_assistant-0.7.0.zip`, paste the notes (`RELEASE_NOTES.md`) and
 publish. The script checks that the version agrees in all three places it is
 written, so a forgotten bump cannot ship a mislabelled add-on.
 

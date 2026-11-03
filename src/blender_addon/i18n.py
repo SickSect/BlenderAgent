@@ -406,6 +406,10 @@ STRINGS = {
         "find.resolution_mismatch": (
             "В материале «{mat}» карты разного разрешения: {sizes}"
         ),
+        "find.flat_base_color": (
+            "Базовый цвет материала «{mat}» — константа ({color}), без текстуры "
+            "или процедурного узора"
+        ),
         # -- UV (uv.py) ---------------------------------------------------
         "uv.uv_no_uv": "У объекта «{obj}» нет UV-развёртки",
         "uv.uv_overlap": (
@@ -461,6 +465,32 @@ STRINGS = {
         "mesh.levels": "Уровней LOD",
         "mesh.weld": "Порог сварки",
         "mesh.fill_holes": "Закрывать дыры",
+        "mesh.fix_non_manifold": "Чинить non-manifold",
+        "mesh.repair_non_manifold_done": (
+            "«{name}»: non-manifold рёбер {before} → {after}, открытых рёбер "
+            "{boundary_before} → {boundary_after}"
+        ),
+        "mesh.repair_non_manifold_short": "Non-manifold починен",
+        "mesh.repair_non_manifold_clean": "Non-manifold рёбер нет — чинить нечего.",
+        "mesh.repair_non_manifold_none": (
+            "Безопасно починить не удалось: сетка не изменена."
+        ),
+        "mesh.repair_non_manifold_internal": "Убрано внутренних граней: {n}",
+        "mesh.repair_non_manifold_duplicates": "Убрано дублирующихся граней: {n}",
+        "mesh.repair_non_manifold_zero": "Убрано пустых граней: {n}",
+        "mesh.repair_non_manifold_welded": "Точечно сварено вершин: {n}",
+        "mesh.repair_non_manifold_split": "Разделено ветвей: {n}",
+        "mesh.repair_non_manifold_left": (
+            "Осталось non-manifold рёбер: {n} — вероятно, самопересечения или "
+            "тонкие стенки."
+        ),
+        "mesh.repair_non_manifold_open": (
+            "Появилось открытых рёбер: {n}. Закройте их, если нужна замкнутая "
+            "сетка."
+        ),
+        "mesh.repair_non_manifold_area": (
+            "Площадь поверхности: {before} м² → {after} м²"
+        ),
         "mesh.repair_done": (
             "«{name}» починена: {verts_before} → {verts_after} вершин, "
             "{faces_before} → {faces_after} граней"
@@ -493,6 +523,10 @@ STRINGS = {
         "mesh.retopo_non_manifold": (
             "В новой сетке {n} не-манifold рёбер — это наследие ремеша, "
             "проверьте сетку перед экспортом"
+        ),
+        "mesh.retopo_non_manifold_fixed": (
+            "Non-manifold рёбра: {before} → {after} (внутренних граней убрано: "
+            "{internal}, ветвей разделено: {split})"
         ),
         "mesh.retopo_area": (
             "Площадь поверхности: было {before} м², стало {after} м² (×{ratio})"
@@ -565,6 +599,14 @@ STRINGS = {
         ),
         "msg.button_error": (
             "[Пользователь нажал кнопку, она вернула ошибку:\n{report}]"
+        ),
+        "msg.code_result_for_model": (
+            "[Пользователь выполнил код, который ты предложил. Код отработал без "
+            "ошибок, но сцена могла измениться.]"
+        ),
+        "msg.code_error_for_model": (
+            "[Пользователь выполнил код, который ты предложил, и получил ошибку. "
+            "Исправь код или объясни, что пошло не так.]"
         ),
         "msg.tool_repeat": (
             "Инструмент «{name}» уже выполнялся в этом запросе — повторный "
@@ -987,6 +1029,10 @@ STRINGS = {
         "find.resolution_mismatch": (
             "Material \"{mat}\" mixes maps of different sizes: {sizes}"
         ),
+        "find.flat_base_color": (
+            "Base Color of material \"{mat}\" is a flat colour ({color}) - no "
+            "texture or procedural variation"
+        ),
         # -- UV ----------------------------------------------------------
         "uv.uv_no_uv": "Object \"{obj}\" has no UV unwrap",
         "uv.uv_overlap": (
@@ -1044,6 +1090,30 @@ STRINGS = {
         "mesh.levels": "LOD levels",
         "mesh.weld": "Weld distance",
         "mesh.fill_holes": "Fill holes",
+        "mesh.fix_non_manifold": "Repair non-manifold",
+        "mesh.repair_non_manifold_done": (
+            "\"{name}\": non-manifold edges {before} -> {after}, open edges "
+            "{boundary_before} -> {boundary_after}"
+        ),
+        "mesh.repair_non_manifold_short": "The non-manifold edges were repaired",
+        "mesh.repair_non_manifold_clean": "No non-manifold edges: nothing to repair.",
+        "mesh.repair_non_manifold_none": (
+            "No safe repair found: the mesh was left unchanged."
+        ),
+        "mesh.repair_non_manifold_internal": "Internal faces removed: {n}",
+        "mesh.repair_non_manifold_duplicates": "Duplicate faces removed: {n}",
+        "mesh.repair_non_manifold_zero": "Zero-area faces removed: {n}",
+        "mesh.repair_non_manifold_welded": "Vertices welded locally: {n}",
+        "mesh.repair_non_manifold_split": "Branches split: {n}",
+        "mesh.repair_non_manifold_left": (
+            "Non-manifold edges left: {n} - likely self-intersections or thin walls."
+        ),
+        "mesh.repair_non_manifold_open": (
+            "New open edges: {n}. Close them if the mesh must be watertight."
+        ),
+        "mesh.repair_non_manifold_area": (
+            "Surface area: {before} m2 -> {after} m2"
+        ),
         "mesh.repair_done": (
             "\"{name}\" repaired: {verts_before} -> {verts_after} vertices, "
             "{faces_before} -> {faces_after} faces"
@@ -1076,6 +1146,10 @@ STRINGS = {
         "mesh.retopo_non_manifold": (
             "The new mesh has {n} non-manifold edges - that is what the remesh "
             "leaves behind, check the mesh before exporting"
+        ),
+        "mesh.retopo_non_manifold_fixed": (
+            "Non-manifold edges: {before} -> {after} ({internal} internal faces "
+            "removed, {split} branches split)"
         ),
         "mesh.retopo_area": (
             "The surface area went from {before} m2 to {after} m2 (x{ratio})"
@@ -1149,6 +1223,14 @@ STRINGS = {
         ),
         "msg.button_error": (
             "[The user pressed a button and it returned an error:\n{report}]"
+        ),
+        "msg.code_result_for_model": (
+            "[The user ran the code you suggested. It finished without errors; "
+            "the scene may have changed.]"
+        ),
+        "msg.code_error_for_model": (
+            "[The user ran the code you suggested and it failed. Fix the code or "
+            "explain what went wrong.]"
         ),
         "msg.tool_repeat": (
             "The tool \"{name}\" already ran in this request - the repeat was "

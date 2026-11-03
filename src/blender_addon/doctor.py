@@ -55,6 +55,7 @@ DISPLACEMENT_NO_SUBDIV = "displacement_no_subdiv"
 ORPHAN_MATERIAL = "orphan_material"
 DUPLICATE_MATERIAL = "duplicate_material"
 RESOLUTION_MISMATCH = "resolution_mismatch"
+FLAT_BASE_COLOR = "flat_base_color"
 
 # Fixes that can be applied without asking and without losing data. Anything
 # destructive (deleting an orphan, merging duplicates) is deliberately absent.
@@ -299,7 +300,29 @@ def audit_material(mat) -> List[Finding]:
                 )
             )
 
-    # 5. Texture files: missing, not packed, absolute path.
+    # 5. Base Color is a constant: no texture and no procedural variation.
+    # A model that "makes a material" often stops at a default_value on the
+    # Principled node. The scene renders, so nothing looks broken - but the
+    # next turn must know that the material is still a placeholder, otherwise
+    # the model keeps adding details to a flat colour. This is a note, not a
+    # defect: glass and clean metal are legitimately flat.
+    if bsdf is not None:
+        base = api.get_input(bsdf, "Base Color")
+        if base is not None and not base.links:
+            colour = ", ".join(
+                f"{float(channel):.2f}" for channel in base.default_value[:3]
+            )
+            findings.append(
+                _finding(
+                    FLAT_BASE_COLOR,
+                    INFO,
+                    {"mat": mat.name, "color": colour},
+                    subject=mat.name,
+                    material=mat.name,
+                )
+            )
+
+    # 6. Texture files: missing, not packed, absolute path.
     for node in tree.nodes:
         if node.type != "TEX_IMAGE":
             continue
@@ -338,7 +361,7 @@ def audit_material(mat) -> List[Finding]:
                 )
             )
 
-    # 6. Displacement without a subdivision modifier on the users.
+    # 7. Displacement without a subdivision modifier on the users.
     displaced = any(
         link.to_node.type == "OUTPUT_MATERIAL"
         and link.to_socket.name == "Displacement"
@@ -360,7 +383,7 @@ def audit_material(mat) -> List[Finding]:
                     )
                 )
 
-    # 7. Maps of different sizes in one material.
+    # 8. Maps of different sizes in one material.
     sizes = {}
     for node in tree.nodes:
         if node.type != "TEX_IMAGE":
@@ -621,8 +644,9 @@ def summary(findings_list: List[Finding]) -> Dict[str, int]:
     "Audit materials",
     "Find problems in the materials of the scene: data maps in the wrong "
     "colour space, normal maps wired without a Normal Map node, missing "
-    "texture files, meshes without UVs, unused and duplicate materials. Call "
-    "this instead of inspecting the scene by hand.",
+    "texture files, meshes without UVs, a flat Base Color with no texture, "
+    "unused and duplicate materials. Call this instead of inspecting the "
+    "scene by hand.",
     params=("material",),
 )
 def audit_tool(material=None, **kwargs) -> str:

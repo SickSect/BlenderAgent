@@ -1,6 +1,25 @@
-# Asset Assistant 0.5.9
+# Asset Assistant 0.7.0
 
 **A Blender add-on that tells you which of your game assets are broken — and does the rest of the pipeline for you.**
+
+## What's new in 0.7.0
+
+- **Non-manifold repair.** The remesh can leave edges with more than two faces.
+  A new button and the `mesh.repair_non_manifold` tool clean them locally:
+  remove zero-area, duplicate and internal faces; weld only the vertices on a
+  branching edge; split what is still branching. There is no global weld — on
+  the measured asset it turned 165 non-manifold edges into 4 154. Every step is
+  measured, and a step that makes the mesh worse is rolled back.
+- **A checkbox in the retopology.** "Repair non-manifold" is on by default. The
+  repair runs after the remesh and shrinkwrap, before the final cleanup, and
+  the report says what changed. Splitting branches may leave open edges; the
+  add-on says how many instead of silently deleting geometry.
+- **A synthetic regression test.** `tests/run_non_manifold_check.py` covers a
+  clean cube (must not change), a three-face "fin" (1 → 0), a duplicated face
+  (4 → 0), a zero-area face (1 → 0), two and three glued cubes (4 → 0 and 7 → 0
+  without holes), a second run, the button, the tool and the setting.
+- The 0.6.x line also brought the closed AI loop and the flat Base Color note
+  in the doctor.
 
 Blender is wonderful for making game assets and terrible for keeping them correct.
 Nothing warns you that the normal map is in `sRGB` instead of `Non-Color`, that
@@ -79,7 +98,7 @@ the export). The model is a multiplier, not a foundation.
 
 ## Install
 
-1. Download `asset_assistant-0.5.9.zip` (below).
+1. Download `asset_assistant-0.7.0.zip` (below).
 2. In Blender: *Edit → Preferences → Get Extensions → ▾ → Install from Disk*,
    pick the zip, enable **Asset Assistant**.
 3. For the chat: a local model (`ollama pull qwen2.5-coder:7b`) or any
@@ -90,8 +109,8 @@ Requires Blender 4.2+ (tested on 5.2 LTS).
 
 | | |
 |---|---|
-| Tools | 40 — each one a button, a model call, and a headless test |
+| Tools | 48 — each one a button, a model call, and a headless test |
 | Doctor checks | 12, 4 repaired automatically |
 | Skills | 8, with runnable code samples |
 | Presets | 16 hand-written materials + 16 procedural recipes |
-| Headless checks | 17 scripts running the real code in the real Blender |
+| Headless checks | 21 scripts running the real code in the real Blender |

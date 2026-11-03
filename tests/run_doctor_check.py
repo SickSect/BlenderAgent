@@ -148,6 +148,31 @@ def part_audit(doctor, cube, sphere):
     check(doctor.MISSING_FILE in codes, "the missing texture file is found")
     check(doctor.NO_UV in codes, "the mesh without UV is found")
     check(doctor.SURFACE_UNCONNECTED in codes, "the unplugged output is found")
+    check(doctor.FLAT_BASE_COLOR in codes, "the flat Base Color is found")
+
+    flat = bpy.data.materials.get("DoctorUnplugged")
+    flat_findings = doctor.audit_material(flat)
+    flat_finding = next(
+        (
+            finding
+            for finding in flat_findings
+            if finding.code == doctor.FLAT_BASE_COLOR
+        ),
+        None,
+    )
+    check(flat_finding is not None, "the flat Base Color of one material is found")
+    check(
+        flat_finding is not None and flat_finding.severity == "info",
+        "a flat colour is a note, not an error",
+    )
+    check(
+        flat_finding is not None and flat_finding.fix == "",
+        "a flat colour is not repaired automatically",
+    )
+    check(
+        flat_finding is not None and "flat" in flat_finding.text("en").lower(),
+        "the flat-colour finding is readable to the model",
+    )
 
     mat = bpy.data.materials.get("DoctorMat")
     own = doctor.audit_material(mat)

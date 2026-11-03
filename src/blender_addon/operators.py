@@ -320,15 +320,22 @@ class GAA_OT_run_code(bpy.types.Operator):
         try:
             _exec_script(code, namespace, stdout, context)
         except Exception:
+            error = traceback.format_exc()
             state.add_display(
-                "error", i18n.T("msg.code_error") + "\n" + traceback.format_exc()
+                "error",
+                i18n.T("msg.code_error") + "\n" + error,
+                remember=False,
             )
+            # The generic button report cannot tell the model whether the
+            # script worked; this one can. See state.remember_code_result.
+            state.remember_code_result(False, error)
         else:
             message = i18n.T("msg.code_done")
             printed = stdout.getvalue().strip()
             if printed:
                 message += "\n\n" + i18n.T("msg.output") + "\n" + printed
-            state.add_display("result", message)
+            state.add_display("result", message, remember=False)
+            state.remember_code_result(True, printed)
         # One-shot: the button is hidden once code_ran is set (see ui.py), so a
         # stray second click cannot duplicate the scene again. The code text
         # stays in pending_code for the "To Text Editor" button, but the block
@@ -1580,6 +1587,113 @@ class GAA_OT_mesh_repair(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GAA_OT_mesh_repair_non_manifold(bpy.types.Operator):
+    """Починить non-manifold рёбра: внутренние стены, дубли, точечная сварка, разделение ветвей"""
+
+    bl_idname = "gaa.mesh_repair_non_manifold"
+    bl_label = "Починить non-manifold"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "active_object", None)
+        if obj is None:
+            self.report({"WARNING"}, i18n.T("mesh.no_object"))
+            return {"CANCELLED"}
+        if obj.type != "MESH":
+            self.report({"WARNING"}, i18n.T("mesh.not_mesh", name=obj.name))
+            return {"CANCELLED"}
+        _show_tab(context, "MESH")
+        try:
+            report = mesh.repair_non_manifold(obj.data)
+        except Exception as exc:  # noqa: BLE001
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=exc))
+            return {"CANCELLED"}
+
+        if not report.get("ok"):
+            self.report({"ERROR"}, i18n.T("mesh.failed", exc=report.get("error")))
+            return {"CANCELLED"}
+
+        before = report["before"]
+        after = report["after"]
+        if not report.get("changed"):
+            if before["non_manifold"]:
+                lines = [i18n.T("mesh.repair_non_manifold_none")]
+            else:
+                lines = [i18n.T("mesh.repair_non_manifold_clean")]
+        else:
+            lines = [
+                i18n.T(
+                    "mesh.repair_non_manifold_done",
+                    name=obj.name,
+                    before=before["non_manifold"],
+                    after=after["non_manifold"],
+                    boundary_before=before["boundary"],
+                    boundary_after=after["boundary"],
+                )
+            ]
+            if report.get("internal_faces"):
+                lines.append(
+                    i18n.T(
+                        "mesh.repair_non_manifold_internal",
+                        n=report["internal_faces"],
+                    )
+                )
+            if report.get("duplicate_faces"):
+                lines.append(
+                    i18n.T(
+                        "mesh.repair_non_manifold_duplicates",
+                        n=report["duplicate_faces"],
+                    )
+                )
+            if report.get("zero_faces"):
+                lines.append(
+                    i18n.T("mesh.repair_non_manifold_zero", n=report["zero_faces"])
+                )
+            if report.get("welded"):
+                lines.append(
+                    i18n.T(
+                        "mesh.repair_non_manifold_welded", n=report["welded"]
+                    )
+                )
+            if report.get("split"):
+                lines.append(
+                    i18n.T("mesh.repair_non_manifold_split", n=report["split"])
+                )
+            if after["non_manifold"]:
+                lines.append(
+                    i18n.T(
+                        "mesh.repair_non_manifold_left",
+                        n=after["non_manifold"],
+                    )
+                )
+            opened = after["boundary"] - before["boundary"]
+            if opened > 0:
+                lines.append(
+                    i18n.T("mesh.repair_non_manifold_open", n=opened)
+                )
+            if before["area"]:
+                change = abs(after["area"] - before["area"]) / before["area"]
+                if change > 0.01:
+                    lines.append(
+                        i18n.T(
+                            "mesh.repair_non_manifold_area",
+                            before=round(before["area"], 2),
+                            after=round(after["area"], 2),
+                        )
+                    )
+
+        state.add_display("result", "\n".join(lines))
+        if report.get("changed"):
+            info = i18n.T("mesh.repair_non_manifold_short")
+        elif before["non_manifold"]:
+            info = i18n.T("mesh.repair_non_manifold_none")
+        else:
+            info = i18n.T("mesh.repair_non_manifold_clean")
+        self.report({"INFO"}, info)
+        state._redraw()
+        return {"FINISHED"}
+
+
 class GAA_OT_mesh_retopo(bpy.types.Operator):
     """Сделать игровую сетку по бюджету треугольников"""
 
@@ -1603,6 +1717,7 @@ class GAA_OT_mesh_retopo(bpy.types.Operator):
                 settings["budget"],
                 settings["shrinkwrap"],
                 exact=settings["exact"],
+                fix_non_manifold=settings["fix_non_manifold"],
             )
         except Exception as exc:  # noqa: BLE001
             self.report({"ERROR"}, i18n.T("mesh.failed", exc=exc))
@@ -1642,7 +1757,34 @@ class GAA_OT_mesh_retopo(bpy.types.Operator):
                     worst=round(error["max"] * 1000, 1),
                 )
             )
-        if report.get("non_manifold"):
+        fix_report = report.get("non_manifold_fix") or {}
+        if fix_report.get("error"):
+            lines.append(i18n.T("mesh.failed", exc=fix_report["error"]))
+        elif fix_report.get("changed"):
+            lines.append(
+                i18n.T(
+                    "mesh.retopo_non_manifold_fixed",
+                    before=report.get("non_manifold_before", 0),
+                    after=report.get("non_manifold", 0),
+                    internal=fix_report.get("internal_faces", 0),
+                    split=fix_report.get("split", 0),
+                )
+            )
+            if report.get("non_manifold"):
+                lines.append(
+                    i18n.T(
+                        "mesh.repair_non_manifold_left",
+                        n=report["non_manifold"],
+                    )
+                )
+            opened = fix_report.get("boundary_after", 0) - fix_report.get(
+                "boundary_before", 0
+            )
+            if opened > 0:
+                lines.append(
+                    i18n.T("mesh.repair_non_manifold_open", n=opened)
+                )
+        elif report.get("non_manifold"):
             lines.append(
                 i18n.T("mesh.retopo_non_manifold", n=report["non_manifold"])
             )
@@ -2260,6 +2402,7 @@ _classes = (
     GAA_OT_cleanup_orphans,
     GAA_OT_mesh_check,
     GAA_OT_mesh_repair,
+    GAA_OT_mesh_repair_non_manifold,
     GAA_OT_mesh_retopo,
     GAA_OT_mesh_lod,
     GAA_OT_set_tab,
